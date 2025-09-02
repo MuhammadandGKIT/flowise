@@ -1,5 +1,6 @@
 const express = require("express");
-const puppeteer = require("puppeteer");
+// const puppeteer = require("puppeteer");
+const Papa = require("papaparse");
 const axios = require("axios");
 require("dotenv").config();
 
@@ -42,16 +43,9 @@ app.post("/cek", async (req, res) => {
 
 app.use(express.json());
 
-// const TARGET_ROOM = "5826c5ad-9253-4177-922f-309d4565115b";
 const TARGET_ROOM = process.env.TARGET_ROOM;
 const FLOWISE_URL = process.env.FLOWISE_URL;
-// const FLOWISE_URL =
-//   "https://cloud.flowiseai.com/api/v1/prediction/cca885c8-fbea-49e3-94ce-6f8f14137fb8";
-// const QONTAK_URL =
-//   "https://service-chat.qontak.com/api/open/v1/messages/whatsapp";
-  const QONTAK_URL = process.env.QONTAK_URL;
-// const QONTAK_TOKEN =
-//   "Bearer JCXvkjGiACxo4DGiHg8zMpBc3-WPP_eCVSVl9DtTl4Q";
+const QONTAK_URL = process.env.QONTAK_URL;
 const QONTAK_TOKEN = process.env.QONTAK_TOKEN;
 
 // const BOT_ID = "BOT_ID_KAMU";
@@ -124,8 +118,62 @@ app.post("/webhook/qontak", async (req, res) => {
   res.sendStatus(200);
 });
 
-app.listen(3000, () => {
-  console.log("✅ Server webhook jalan di http://localhost:3000");
+
+
+/* ================================
+   ROUTE CEK DATA GOOGLE SHEET
+================================ */
+
+
+async function getProducts() {
+  const baseUrl =
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRFgplG5LVeUR6nVXdUoOfsn6nRNec91o2voaLKEnifYC8CI4Ykqe_RPoUl1tMPFvaXlbbcQvnfAc2I/pub?gid=1310216197&single=true&output=csv";
+
+  const url = `${baseUrl}&t=${Date.now()}`;
+
+  const res = await axios.get(url, {
+    headers: {
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+      Expires: "0",
+    },
+  });
+
+  const parsed = Papa.parse(res.data, { header: true, skipEmptyLines: true });
+
+  const products = parsed.data
+    .filter((row) => row["Nama Produk"]) // pastikan kolom ini ada isinya
+    .map((row) => ({
+      id: row["ID Produk"]?.trim() || null,
+      name: row["Nama Produk"]?.trim() || null,
+      description: row["Deskripsi Produk"]?.trim() || null,
+      price: parseInt(row["Komisi Afiliasi %"], 10) || 0,
+      brand: row["Merek"]?.trim() || null,
+      supplier: row["Supplier"]?.trim() || null,
+      coverage: row["Coverage Negara"]?.trim() || null,
+      sku: row["SKU"]?.trim() || null,
+      tiktok: row["Tautan (TikTok Shop)"]?.trim() || null,
+      website: row["Tautan Web"]?.trim() || null,
+      tokopedia: row["Tautan Tokopedia"]?.trim() || null,
+    }));
+
+  return products;
+}
+
+
+// route cek data
+app.get("/products", async (req, res) => {
+  try {
+    const products = await getProducts();
+    res.json({
+      success: true,
+      count: products.length,
+      data: products,
+    });
+  } catch (err) {
+    console.error("Error getProducts:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /* ================================
@@ -139,7 +187,7 @@ app.get("/", (req, res) => {
   `);
 });
 
-// const PORT = 3000;
+
 app.listen(PORT, () => {
   console.log(`✅ Server gabungan jalan di http://localhost:${PORT} 🚀`);
 });
