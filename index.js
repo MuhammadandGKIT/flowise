@@ -124,57 +124,50 @@ app.post("/webhook/qontak", async (req, res) => {
    ROUTE CEK DATA GOOGLE SHEET
 ================================ */
 
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-async function getProducts() {
-  const baseUrl =
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRFgplG5LVeUR6nVXdUoOfsn6nRNec91o2voaLKEnifYC8CI4Ykqe_RPoUl1tMPFvaXlbbcQvnfAc2I/pub?gid=1310216197&single=true&output=csv";
+app.post("/from-gas", (req, res) => {
+  let body = req.body;
 
-  const url = `${baseUrl}&t=${Date.now()}`;
+  // kalau products dikirim sebagai string → parse ke object
+  if (typeof body.products === "string") {
+    try {
+      body.products = JSON.parse(body.products);
+    } catch (e) {
+      console.error("⚠️ Gagal parse products:", e);
+    }
+  }
 
-  const res = await axios.get(url, {
-    headers: {
-      "Cache-Control": "no-cache",
-      Pragma: "no-cache",
-      Expires: "0",
-    },
-  });
+  console.log("📩 Update dari Google Sheets:");
+  console.log(body);
 
-  const parsed = Papa.parse(res.data, { header: true, skipEmptyLines: true });
-
-  const products = parsed.data
-    .filter((row) => row["Nama Produk"]) // pastikan kolom ini ada isinya
-    .map((row) => ({
-      id: row["ID Produk"]?.trim() || null,
-      name: row["Nama Produk"]?.trim() || null,
-      description: row["Deskripsi Produk"]?.trim() || null,
-      price: parseInt(row["Komisi Afiliasi %"], 10) || 0,
-      brand: row["Merek"]?.trim() || null,
-      supplier: row["Supplier"]?.trim() || null,
-      coverage: row["Coverage Negara"]?.trim() || null,
-      sku: row["SKU"]?.trim() || null,
-      tiktok: row["Tautan (TikTok Shop)"]?.trim() || null,
-      website: row["Tautan Web"]?.trim() || null,
-      tokopedia: row["Tautan Tokopedia"]?.trim() || null,
-    }));
-
-  return products;
-}
+  res.json({ status: "OK", received: body });
+});
 
 
-// route cek data
+
+
+const GAS_URL = process.env.GAS_URL;
+// endpoint baru di Node.js
 app.get("/products", async (req, res) => {
   try {
-    const products = await getProducts();
+    const response = await fetch(GAS_URL);
+    const data = await response.json();
+
     res.json({
-      success: true,
-      count: products.length,
-      data: products,
+      status: "success",
+      source: "Google Sheets",
+      products: data.products || [],
     });
   } catch (err) {
-    console.error("Error getProducts:", err);
-    res.status(500).json({ error: err.message });
+    console.error("❌ Error ambil data dari GAS:", err.message);
+    res.status(500).json({ status: "error", message: err.message });
   }
 });
+
+
+
 
 /* ================================
    ROUTE DEFAULT
