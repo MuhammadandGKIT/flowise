@@ -1,57 +1,102 @@
 const express = require("express");
-// const puppeteer = require("puppeteer");
 const Papa = require("papaparse");
 const axios = require("axios");
 require("dotenv").config();
-
+const pool = require("./db/connection");
 const app = express();
-app.use(express.json());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const fetch = require("node-fetch");
+const fs = require("fs");
+const path = require("path");
+const GAS_URL = process.env.GAS_URL;
+const TARGET_ROOM = process.env.TARGET_ROOM;
+const FLOWISE_URL = process.env.FLOWISE_URL;
+const QONTAK_URL = process.env.QONTAK_URL;
+const QONTAK_TOKEN = process.env.QONTAK_TOKEN;
+const BOT_ID = process.env.BOT_ID;
+const PORT = process.env.PORT || 3001;
 
+// Middleware: parsing body JSON & form-urlencoded dengan limit besar
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 /* ================================
-   ROUTE CEK DATA (Scraping)
+   ROUTE CEK DATA USAGE
 ================================ */
 
 app.post("/cek", async (req, res) => {
   try {
-    const { nomor } = req.body;  // pastikan body punya "nomor"
+    const { nomor } = req.body; 
 
     if (!nomor) {
       return res.status(400).json({ error: "nomor tidak boleh kosong" });
     }
 
-    // contoh hit ke API gkomunika langsung
+    // Hit API gkomunika
     const response = await axios.post(
       "https://gkomunika.id/api/v1/check/data_info",
       new URLSearchParams({ iccid: nomor }).toString(),
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
 
-    res.json({ nomor, hasil: response.data });
+    // Ambil data dari struktur tradeData.subOrderList
+    const data = response.data?.tradeData?.subOrderList?.[0];
+    if (!data) {
+      return res.status(404).json({
+        error: "Data tidak ditemukan",
+        raw: response.data,
+      });
+    }
+
+    // Helper format KB → MB/GB
+    const formatData = (kb) => {
+      const mb = kb / 1024;
+      if (mb >= 1024) return (mb / 1024).toFixed(2) + " GB";
+      return mb.toFixed(2) + " MB";
+    };
+
+    // Hitung total usage & per negara
+    let totalUsageKB = 0;
+    const usagePerCountry = {};
+    const usageDetail = (data.usageInfoList || []).map((u) => {
+      const usedKB = parseInt(u.usedAmount, 10) || 0;
+      totalUsageKB += usedKB;
+      usagePerCountry[u.country] = (usagePerCountry[u.country] || 0) + usedKB;
+
+      return {
+        date: `${u.usedDate.slice(0, 4)}-${u.usedDate.slice(4, 6)}-${u.usedDate.slice(6, 8)}`,
+        country: u.country,
+        usage: formatData(usedKB),
+      };
+    });
+
+    // Ringkasan
+    const hasil = {
+      bundle: data.skuName,
+      activeDate: data.planStartTime,
+      endDate: data.planEndTime,
+      status: data.planStatus === "2" ? "Selesai" : "Aktif",
+      durationDays: data.totalDays,
+      totalUsage: formatData(totalUsageKB),
+      usageByCountry: Object.entries(usagePerCountry).map(([country, used]) => ({
+        country,
+        usage: formatData(used),
+      })),
+      usageDetail,
+    };
+
+    res.json({ nomor, hasil });
   } catch (err) {
+    console.error("=== ERROR ===", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 
+
+
+
 /* ================================
    ROUTE WEBHOOK (Qontak)
 ================================ */
-
-
-
-app.use(express.json());
-
-const TARGET_ROOM = process.env.TARGET_ROOM;
-const FLOWISE_URL = process.env.FLOWISE_URL;
-const QONTAK_URL = process.env.QONTAK_URL;
-const QONTAK_TOKEN = process.env.QONTAK_TOKEN;
-
-// const BOT_ID = "BOT_ID_KAMU";
-const BOT_ID = process.env.BOT_ID;
-const PORT = process.env.PORT || 3000;
-
 app.post("/webhook/qontak", async (req, res) => {
   const body = req.body || {};
   const { webhook_event, data_event, room_id, sender_id, is_agent, text } = body;
@@ -121,47 +166,116 @@ app.post("/webhook/qontak", async (req, res) => {
 
 
 /* ================================
-   ROUTE CEK DATA GOOGLE SHEET
+   ROUTE AMBIL DATA GOOGLE SHEET
 ================================ */
+// middleware body parser dengan limit besar
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// ambil semua produk dari database
+app.get("/products", async (req, res) => {
+  try {
+    // Ambil data tapi exclude kolom tokopedia & tiktok
+    const result = await pool.query(`
+      SELECT 
+        id, id_produk, merek, nama_produk, deskripsi_produk,
+        komisi_afiliasi, supplier, coverage_negara, sku,
+        tautan_web, created_at, updated_at
+      FROM products
+      ORDER BY updated_at DESC
+    `);
 
-app.post("/from-gas", (req, res) => {
-  let body = req.body;
-
-  // kalau products dikirim sebagai string → parse ke object
-  if (typeof body.products === "string") {
-    try {
-      body.products = JSON.parse(body.products);
-    } catch (e) {
-      console.error("⚠️ Gagal parse products:", e);
-    }
+    res.json({
+      status: "success",
+      total: result.rowCount,
+      products: result.rows
+    });
+  } catch (err) {
+    console.error("❌ Error ambil data dari DB:", err.message);
+    res.status(500).json({ status: "error", message: err.message });
   }
-
-  console.log("📩 Update dari Google Sheets:");
-  console.log(body);
-
-  res.json({ status: "OK", received: body });
 });
 
 
 
 
-const GAS_URL = process.env.GAS_URL;
-// endpoint baru di Node.js
-app.get("/products", async (req, res) => {
+app.get("/sync-products", async (req, res) => {
   try {
+    // 1. Ambil data dari GAS
     const response = await fetch(GAS_URL);
-    const data = await response.json();
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`GAS fetch failed: ${response.status} ${response.statusText}. Response: ${text.substring(0, 200)}...`);
+    }
+
+    const products = await response.json();
+
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.json({ status: "success", total: 0, message: "Tidak ada produk di GAS" });
+    }
+
+    // 2. Mapping & filter data sesuai header dari Google Sheet
+    const mappedProducts = products
+      .map(p => ({
+        id_produk: p["ID Produk"]?.toString().trim() || null,
+        merek: p["Merek"] || null,
+        nama_produk: p["Nama Produk"] || null,
+        deskripsi_produk: p["Deskripsi Produk"] || null,
+        komisi_afiliasi:
+          p["Komisi Afiliasi %"] !== undefined && p["Komisi Afiliasi %"] !== ""
+            ? Number(p["Komisi Afiliasi %"])
+            : null,
+        supplier: p["Supplier"] || null,
+        coverage_negara: p["Coverage Negara"] || null,
+        sku: p["SKU"] || null,
+        tautan_tiktok: p["Tautan (TikTok Shop)"] || null,
+        tautan_web: p["Tautan Web"] || null,
+        tautan_tokopedia: p["Tautan Tokopedia"] || null,
+      }))
+      .filter(p => p.id_produk); // skip baris tanpa ID Produk
+
+    // 3. Insert/Update ke DB
+    for (const prod of mappedProducts) {
+      await pool.query(
+        `INSERT INTO products (
+          id_produk, merek, nama_produk, deskripsi_produk, komisi_afiliasi,
+          supplier, coverage_negara, sku, tautan_tiktok, tautan_web, tautan_tokopedia,
+          created_at, updated_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),NOW())
+        ON CONFLICT (id_produk) DO UPDATE SET
+          merek = EXCLUDED.merek,
+          nama_produk = EXCLUDED.nama_produk,
+          deskripsi_produk = EXCLUDED.deskripsi_produk,
+          komisi_afiliasi = EXCLUDED.komisi_afiliasi,
+          supplier = EXCLUDED.supplier,
+          coverage_negara = EXCLUDED.coverage_negara,
+          sku = EXCLUDED.sku,
+          tautan_tiktok = EXCLUDED.tautan_tiktok,
+          tautan_web = EXCLUDED.tautan_web,
+          tautan_tokopedia = EXCLUDED.tautan_tokopedia,
+          updated_at = NOW()`,
+        [
+          prod.id_produk,
+          prod.merek,
+          prod.nama_produk,
+          prod.deskripsi_produk,
+          prod.komisi_afiliasi,
+          prod.supplier,
+          prod.coverage_negara,
+          prod.sku,
+          prod.tautan_tiktok,
+          prod.tautan_web,
+          prod.tautan_tokopedia,
+        ]
+      );
+    }
 
     res.json({
       status: "success",
-      source: "Google Sheets",
-      products: data.products || [],
+      total: mappedProducts.length,
+      message: `Berhasil menyimpan ${mappedProducts.length} produk ke database 🚀`,
     });
   } catch (err) {
-    console.error("❌ Error ambil data dari GAS:", err.message);
+    console.error("❌ Error sync ke DB:", err);
     res.status(500).json({ status: "error", message: err.message });
   }
 });
@@ -173,11 +287,7 @@ app.get("/products", async (req, res) => {
    ROUTE DEFAULT
 ================================ */
 app.get("/", (req, res) => {
-  res.send(`
-    ✅ Server jalan 🚀<br/>
-    - Gunakan <b>POST /cek</b> dengan body JSON { "nomor": "..." }<br/>
-    - Gunakan <b>POST /webhook/qontak</b> untuk terima webhook
-  `);
+  res.sendFile(path.join(__dirname, "index.html"));
 });
 
 

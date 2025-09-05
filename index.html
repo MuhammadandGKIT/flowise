@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="id" class="h-full scroll-smooth">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Selamat Datang — Semangat Membara</title>
+  <!-- Jika proyek sudah terkonfigurasi Tailwind via Vite, gunakan baris di bawah -->
+
+  
+  <!-- Alternatif cepat: CDN Tailwind (hapus jika sudah pakai Vite) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif']
+          },
+          keyframes: {
+            flame: {
+              '0%, 100%': { transform: 'translateY(0) scale(1)', filter: 'hue-rotate(0deg)' },
+              '50%': { transform: 'translateY(-3px) scale(1.02)', filter: 'hue-rotate(15deg)' }
+            },
+            pulseGlow: {
+              '0%, 100%': { boxShadow: '0 0 0 0 rgba(255,100,0,0.6)' },
+              '50%': { boxShadow: '0 0 40px 8px rgba(255,140,0,0.35)' }
+            },
+            marquee: {
+              '0%': { transform: 'translateX(100%)' },
+              '100%': { transform: 'translateX(-100%)' }
+            },
+            gradientMove: {
+              '0%, 100%': { 'background-position': '0% 50%' },
+              '50%': { 'background-position': '100% 50%' }
+            }
+          },
+          animation: {
+            flame: 'flame 1.6s ease-in-out infinite',
+            pulseGlow: 'pulseGlow 2.4s ease-in-out infinite',
+            marquee: 'marquee 24s linear infinite',
+            gradientMove: 'gradientMove 8s ease infinite'
+          },
+          backgroundSize: {
+            '300%': '300% 300%'
+          },
+          colors: {
+            ember: {
+              50: '#fff7ed',
+              100: '#ffedd5',
+              200: '#fed7aa',
+              300: '#fdba74',
+              400: '#fb923c',
+              500: '#f97316',
+              600: '#ea580c',
+              700: '#c2410c',
+              800: '#9a3412',
+              900: '#7c2d12'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+</head>
+<body class="min-h-full bg-slate-950 text-white font-display antialiased">
+  <!-- Latar gradien dinamis seperti bara api -->
+  <div class="pointer-events-none fixed inset-0 -z-10 bg-gradient-to-br from-orange-600 via-rose-600 to-fuchsia-700 bg-300% animate-gradientMove opacity-90"></div>
+  <!-- Overlay pola halus -->
+  <div class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_20%_20%,rgba(255,255,255,0.08),transparent_25%),radial-gradient(circle_at_80%_30%,rgba(255,255,255,0.06),transparent_30%),radial-gradient(circle_at_40%_80%,rgba(255,255,255,0.05),transparent_30%)]"></div>
+
+  <!-- Navbar sederhana -->
+  <header class="sticky top-0 z-20 backdrop-blur supports-[backdrop-filter]:bg-white/5 border-b border-white/10">
+    <div class="mx-auto max-w-7xl px-4 py-3 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-3 group">
+        <span class="text-2xl">🔥</span>
+        <span class="text-lg font-extrabold tracking-tight group-hover:tracking-wider transition-all">Semangat<span class="text-amber-300">Membara</span></span>
+      </a>
+      <nav class="hidden md:flex items-center gap-6 text-sm">
+        <a href="#fitur" class="hover:text-amber-200 transition">Fitur</a>
+        <a href="#testimoni" class="hover:text-amber-200 transition">Testimoni</a>
+        <a href="#mulai" class="hover:text-amber-200 transition">Mulai</a>
+      </nav>
+      <div class="flex items-center gap-3">
+      
+          <a href="" class="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 transition">Dashboard</a>
+       
+          <a href="" class="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 transition">Masuk</a>
+      
+            <a href="" class="px-4 py-2 rounded-xl bg-amber-400 text-slate-900 font-semibold hover:bg-amber-300 transition shadow-lg shadow-amber-500/30">Daftar</a>
+      
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <section class="relative">
+    <div class="mx-auto max-w-7xl px-4 py-20 md:py-28 grid md:grid-cols-2 gap-10 items-center">
+      <div>
+        <div class="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs tracking-wide">
+          <span class="animate-flame">🔥</span>
+          <span class="uppercase">Selamat datang</span>
+          <span class="opacity-70">— saatnya #GasPol</span>
+        </div>
+        <h1 class="mt-5 text-4xl md:text-6xl font-extrabold leading-tight">
+          Nyalakan <span class="text-amber-300 drop-shadow">Semangat</span>,
+          Wujudkan <span class="text-amber-200">Mimpi!</span>
+        </h1>
+        <p class="mt-4 text-base md:text-lg text-white/85 max-w-xl">
+          Hari ini bukan untuk ditunda. Ambil langkah pertama, tingkatkan 1% setiap hari,
+          dan lihat bagaimana bara kecil berubah menjadi api yang tak terbendung.
+        </p>
+        <div class="mt-8 flex flex-wrap items-center gap-4" id="mulai">
+          <a href="" class="group inline-flex items-center gap-2 rounded-2xl bg-amber-400 text-slate-900 font-semibold px-6 py-3 transition hover:bg-amber-300 hover:translate-y-[-2px] active:translate-y-0 focus:outline-none focus:ring-2 focus:ring-amber-300 animate-pulseGlow">
+            Mulai Sekarang
+            <span class="transition group-hover:translate-x-1">→</span>
+          </a>
+          <a href="#fitur" class="inline-flex items-center gap-2 rounded-2xl bg-white/10 px-6 py-3 border border-white/20 hover:bg-white/15 transition">
+            Lihat Fitur
+          </a>
+        </div>
+
+        <div class="mt-10 flex items-center gap-6 text-sm text-white/80">
+          <div class="flex items-center gap-2">
+            <span class="text-xl">⚡</span>
+            <span>Fokus 25 menit — rehat 5 menit</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-xl">🏆</span>
+            <span>Konsisten > Perfeksionis</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="relative">
+        <!-- Kartu motivasi -->
+        <div class="relative rounded-3xl bg-white/10 border border-white/15 p-6 md:p-8 shadow-2xl backdrop-blur">
+          <div class="absolute -top-5 -right-5 text-5xl animate-flame">🔥</div>
+          <h3 class="text-xl md:text-2xl font-bold">Mantra Hari Ini</h3>
+          <p class="mt-2 text-white/85" id="mantra">Disiplin hari ini = hasil besar esok hari.</p>
+          <div class="mt-6 grid grid-cols-3 gap-3">
+            <div class="rounded-2xl bg-slate-900/40 p-4 border border-white/10 text-center">
+              <div class="text-2xl font-extrabold" id="angka1">00</div>
+              <div class="text-xs opacity-70">Menit Fokus</div>
+            </div>
+            <div class="rounded-2xl bg-slate-900/40 p-4 border border-white/10 text-center">
+              <div class="text-2xl font-extrabold" id="angka2">00</div>
+              <div class="text-xs opacity-70">Tugas Selesai</div>
+            </div>
+            <div class="rounded-2xl bg-slate-900/40 p-4 border border-white/10 text-center">
+              <div class="text-2xl font-extrabold" id="angka3">00</div>
+              <div class="text-xs opacity-70">Hari Konsisten</div>
+            </div>
+          </div>
+          <button id="btnSemangat" class="mt-6 w-full rounded-2xl bg-gradient-to-r from-amber-400 to-orange-500 text-slate-900 font-bold py-3 hover:opacity-95 transition shadow-lg shadow-amber-500/30">
+            Tambah Semangat 🔥
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Marquee kutipan -->
+    <div class="relative overflow-hidden border-y border-white/10 bg-black/20">
+      <div class="whitespace-nowrap py-3 animate-marquee text-sm">
+        <span class="mx-6 opacity-90">"Sedikit lebih maju setiap hari."</span>
+        <span class="mx-6 opacity-90">"Konsistensi mengalahkan bakat ketika bakat tidak konsisten."</span>
+        <span class="mx-6 opacity-90">"Mulai dulu, sempurnakan sambil jalan."</span>
+        <span class="mx-6 opacity-90">"Target jelas, aksi tegas."</span>
+        <span class="mx-6 opacity-90">"Besok ditentukan oleh pilihan hari ini."</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Fitur -->
+  <section id="fitur" class="mx-auto max-w-7xl px-4 py-16 md:py-24">
+    <h2 class="text-2xl md:text-3xl font-extrabold">Bahan Bakar Produktif</h2>
+    <p class="mt-2 text-white/80 max-w-2xl">Kumpulan fitur sederhana yang bikin kamu tetap panas dan fokus pada tujuan.</p>
+
+    <div class="mt-8 grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+      <article class="rounded-3xl bg-white/10 border border-white/15 p-6 hover:translate-y-[-4px] transition shadow-xl">
+        <div class="text-3xl">⏱️</div>
+        <h3 class="mt-3 font-bold text-lg">Timer Fokus</h3>
+        <p class="text-sm text-white/80">Metode 25/5 untuk menjaga energi tanpa burn out.</p>
+      </article>
+      <article class="rounded-3xl bg-white/10 border border-white/15 p-6 hover:translate-y-[-4px] transition shadow-xl">
+        <div class="text-3xl">✅</div>
+        <h3 class="mt-3 font-bold text-lg">Daftar Aksi</h3>
+        <p class="text-sm text-white/80">Prioritaskan 3 tugas utama — sisanya bonus.</p>
+      </article>
+      <article class="rounded-3xl bg-white/10 border border-white/15 p-6 hover:translate-y-[-4px] transition shadow-xl">
+        <div class="text-3xl">📈</div>
+        <h3 class="mt-3 font-bold text-lg">Lacak Progres</h3>
+        <p class="text-sm text-white/80">Rayakan konsistensi, bukan hanya hasil akhir.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- Testimoni / Ajakan -->
+  <section id="testimoni" class="mx-auto max-w-7xl px-4 pb-24">
+    <div class="rounded-3xl bg-white/5 border border-white/10 p-8 md:p-12">
+      <div class="grid md:grid-cols-3 gap-8">
+        <figure class="md:col-span-2">
+          <blockquote class="text-xl md:text-2xl font-semibold text-amber-200">“Sejak pakai halaman ini sebagai landing, tiap buka proyek langsung keinget tujuan. Rasanya kayak ada coach yang bilang: ayo lanjut!”</blockquote>
+          <figcaption class="mt-4 text-white/70">— Pengguna bahagia</figcaption>
+        </figure>
+        <div class="flex md:justify-end items-center">
+          <a href="#mulai" class="inline-flex items-center gap-2 rounded-2xl bg-amber-400 text-slate-900 font-semibold px-6 py-3 transition hover:bg-amber-300 shadow-lg shadow-amber-500/30">Gas Sekarang →</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tips" class="mx-auto max-w-7xl px-4 pb-24">
+    <h2 class="text-2xl md:text-3xl font-extrabold">Tips Motivasi dari Teman</h2>
+    <p class="mt-2 text-white/80 max-w-2xl">Kumpulan tips sederhana dari sahabatmu untuk tetap membara setiap hari.</p>
+  
+    <div class="mt-8 grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div class="rounded-3xl bg-white/10 border border-white/15 p-6 shadow-xl">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-lg">Andi</h3>
+          <span class="text-xs text-white/60">1998-08-30</span>
+        </div>
+        <p class="text-sm text-white/85 italic">“Jangan menyerah, terus melangkah.”</p>
+      </div>
+      <div class="rounded-3xl bg-white/10 border border-white/15 p-6 shadow-xl">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-lg">Rina</h3>
+          <span class="text-xs text-white/60">2000-01-15</span>
+        </div>
+        <p class="text-sm text-white/85 italic">“Percaya diri adalah langkah pertama menuju sukses.”</p>
+      </div>
+    </div>
+  </section>
+
+  <footer class="border-t border-white/10 py-8 text-center text-white/70">
+    <p>© {{ date('Y') }} Dibuat dengan 🔥 & Tailwind. Tetap membara!</p>
+  </footer>
+
+  <!-- Sedikit interaksi JS ringan -->
+  <script>
+    const mantraList = [
+      'Disiplin hari ini = hasil besar esok hari.',
+      'Mulai sekarang, bukan nanti.',
+      'Kecilkan alasan, besarkan aksi.',
+      'Fokus pada kemajuan, bukan kesempurnaan.',
+      'Kamu bisa lebih dari yang kamu kira.'
+    ];
+    const mantra = document.getElementById('mantra');
+    const btn = document.getElementById('btnSemangat');
+    const a1 = document.getElementById('angka1');
+    const a2 = document.getElementById('angka2');
+    const a3 = document.getElementById('angka3');
+
+    let fokus = 0, tugas = 0, hari = 1;
+
+    function randomPick(arr){ return arr[Math.floor(Math.random() * arr.length)]; }
+    function bump(el){
+      el.animate([
+        { transform: 'scale(1)' },
+        { transform: 'scale(1.15)' },
+        { transform: 'scale(1)' }
+      ], { duration: 300, easing: 'ease-out' });
+    }
+
+    btn?.addEventListener('click', () => {
+      mantra.textContent = randomPick(mantraList);
+      fokus += 5; tugas += 1; hari = Math.min(365, hari + 1);
+      a1.textContent = String(fokus).padStart(2, '0');
+      a2.textContent = String(tugas).padStart(2, '0');
+      a3.textContent = String(hari).padStart(2, '0');
+      [a1,a2,a3].forEach(bump);
+      // Confetti ringan
+      spark();
+    });
+
+    function spark(){
+      const n = 24;
+      for(let i=0;i<n;i++){
+        const s = document.createElement('span');
+        s.className = 'pointer-events-none fixed z-50 w-1.5 h-1.5 rounded-full bg-amber-300';
+        document.body.appendChild(s);
+        const x = innerWidth / 2, y = innerHeight / 2;
+        const ang = (i / n) * Math.PI * 2;
+        const dist = 40 + Math.random()*80;
+        const dx = Math.cos(ang) * dist;
+        const dy = Math.sin(ang) * dist;
+        s.style.left = x + 'px'; s.style.top = y + 'px';
+        s.animate([
+          { transform: 'translate(-50%, -50%) scale(1)', opacity: 1 },
+          { transform: `translate(${dx-50}%, ${dy-50}%) scale(0.8)`, opacity: 0 }
+        ], { duration: 600 + Math.random()*400, easing: 'cubic-bezier(.2,.8,.2,1)' }).onfinish = () => s.remove();
+      }
+    }
+  </script>
+</body>
+</html>

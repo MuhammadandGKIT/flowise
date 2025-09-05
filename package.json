@@ -11,7 +11,10 @@
     "axios": "^1.11.0",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
+    "knex": "^3.1.0",
+    "node-fetch": "^2.7.0",
     "papaparse": "^5.5.3",
+    "pg": "^8.16.3",
     "puppeteer": "^24.17.1"
   },
   "devDependencies": {
