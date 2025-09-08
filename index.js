@@ -171,30 +171,73 @@ app.post("/webhook/qontak", async (req, res) => {
 // middleware body parser dengan limit besar
 
 // ambil semua produk dari database
+
+
+
+// Set API key (bisa juga simpan di .env)
+const API_KEY = process.env.API_KEY || "rahasia123";
+
 app.get("/products", async (req, res) => {
   try {
-    // Ambil data tapi exclude kolom tokopedia & tiktok
-    const result = await pool.query(`
+    // Cek API key dari header
+    const apiKey = req.headers["x-api-key"];
+    if (!apiKey || apiKey !== API_KEY) {
+      return res.status(401).json({ status: "error", message: "Unauthorized. API key invalid atau tidak diberikan." });
+    }
+
+    const { supplier, country } = req.query;
+
+    let query = `
       SELECT 
         id, id_produk, merek, nama_produk, deskripsi_produk,
         komisi_afiliasi, supplier, coverage_negara, sku,
         tautan_web, created_at, updated_at
       FROM products
-      ORDER BY updated_at DESC
-    `);
+      WHERE 1=1
+    `;
+
+    const values = [];
+    let i = 1;
+
+    // Filter supplier (SIM Card atau eSim)
+    if (supplier) {
+      query += ` AND LOWER(supplier) LIKE LOWER($${i++})`;
+      values.push(`%${supplier.trim()}%`);
+    }
+
+    // Filter negara tujuan
+    if (country) {
+      query += ` AND coverage_negara ILIKE $${i++}`;
+      values.push(`%${country.trim()}%`);
+    }
+
+    query += ` ORDER BY updated_at DESC LIMIT 5`;
+
+    const result = await pool.query(query, values);
+
+    if (!result.rows || result.rows.length === 0) {
+      return res.json({
+        status: "error",
+        message: `Maaf, kami tidak menemukan produk untuk ${country || "negara tersebut"}.`
+      });
+    }
 
     res.json({
       status: "success",
       total: result.rowCount,
       products: result.rows
     });
+
   } catch (err) {
-    console.error("❌ Error ambil data dari DB:", err.message);
+    console.error("❌ Error ambil data:", err.message);
     res.status(500).json({ status: "error", message: err.message });
   }
 });
 
 
+
+
+//post data product
 
 
 app.get("/sync-products", async (req, res) => {
@@ -281,14 +324,112 @@ app.get("/sync-products", async (req, res) => {
 });
 
 
+/* ================================
+   POST DATA ICCID & INVOICE
+================================ */
+app.post("/iccid", async (req, res) => {
+  try {
+    const rows = req.body; // array of objects [{type, order_date, invoice, paket, iccid, code, issue, tgl_issue}, ...]
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ status: "error", message: "No data provided" });
+    }
+
+    // helper format tanggal → YYYY-MM-DD
+    const formatDate = (value) => {
+      if (!value) return null;
+
+      // jika sudah format YYYY-MM-DD, gunakan langsung
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+      // jika format DD.MM.YYYY
+      if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(value)) {
+        const [day, month, year] = value.split(".");
+        return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+      }
+
+      // coba parse date JS
+      const d = new Date(value);
+      if (!isNaN(d.getTime())) {
+        const day = ("0" + d.getDate()).slice(-2);
+        const month = ("0" + (d.getMonth() + 1)).slice(-2);
+        const year = d.getFullYear();
+        return `${year}-${month}-${day}`;
+      }
+
+      return null; // fallback jika tidak valid
+    };
+
+    const query = `
+      INSERT INTO iccid_transactions(type, order_date, invoice, paket, iccid, code, issue, tgl_issue)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+      ON CONFLICT(invoice) DO UPDATE
+        SET type = EXCLUDED.type,
+            paket = EXCLUDED.paket,
+            iccid = EXCLUDED.iccid,
+            code = EXCLUDED.code,
+            issue = EXCLUDED.issue,
+            tgl_issue = EXCLUDED.tgl_issue
+    `;
+
+    for (const r of rows) {
+      await pool.query(query, [
+        r.type || "-",
+        formatDate(r.order_date),
+        r.invoice || "-",
+        r.paket || "-",
+        r.iccid || "-",
+        r.code || "-",
+        r.issue ?? false,
+        formatDate(r.tgl_issue)
+      ]);
+    }
+
+    res.json({ status: "success", count: rows.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+
 
 
 /* ================================
    ROUTE DEFAULT
 ================================ */
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
+  res.send(`
+    <html>
+      <head>
+        <title>API Backend ICCID & Produk</title>
+        <style>
+          body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; line-height: 1.6; }
+          h1 { color: #2c3e50; }
+          code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }
+          .endpoint { margin-bottom: 12px; }
+          .note { margin-top: 20px; padding: 10px; background: #fffae6; border-left: 4px solid #f39c12; }
+        </style>
+      </head>
+      <body>
+        <h1>🚀 API Backend ICCID & Produk</h1>
+        <p>Berikut daftar endpoint yang tersedia:</p>
+
+        <div class="endpoint"><code>POST /cek</code> → Cek data usage ICCID via API gkomunika. Body: { nomor }</div>
+        <div class="endpoint"><code>POST /webhook/qontak</code> → Webhook Qontak, otomatis balas via Flowise</div>
+        <div class="endpoint"><code>GET /products</code> → Ambil produk dari database. Query: supplier, country. <b>Wajib header x-api-key</b></div>
+        <div class="endpoint"><code>GET /sync-products</code> → Sinkronisasi produk dari Google Sheet (GAS) ke database</div>
+        <div class="endpoint"><code>POST /iccid</code> → Insert/update data ICCID & invoice ke database</div>
+
+        <div class="note">
+          🔑 Gunakan API key pada header <code>x-api-key</code> untuk endpoint yang butuh autentikasi.
+        </div>
+      </body>
+    </html>
+  `);
 });
+
+
 
 
 app.listen(PORT, () => {
