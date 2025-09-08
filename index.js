@@ -10,9 +10,11 @@ const path = require("path");
 const GAS_URL = process.env.GAS_URL;
 const TARGET_ROOM = process.env.TARGET_ROOM;
 const FLOWISE_URL = process.env.FLOWISE_URL;
-const QONTAK_URL = process.env.QONTAK_URL;
 const QONTAK_TOKEN = process.env.QONTAK_TOKEN;
+const QONTAK_URL = process.env.QONTAK_URL;
 const BOT_ID = process.env.BOT_ID;
+const TARGET_SENDER = process.env.TARGET_SENDER;     // sender_id
+const TARGET_ACCOUNT = process.env.TARGET_ACCOUNT;   
 const PORT = process.env.PORT || 3001;
 
 // Middleware: parsing body JSON & form-urlencoded dengan limit besar
@@ -97,28 +99,28 @@ app.post("/cek", async (req, res) => {
 /* ================================
    ROUTE WEBHOOK (Qontak)
 ================================ */
+
+// 🔑 Ambil dari .env
 app.post("/webhook/qontak", async (req, res) => {
   const body = req.body || {};
-  const { webhook_event, data_event, room_id, sender_id, is_agent, text } = body;
+  const { webhook_event, data_event, sender_id, is_agent, text, room } = body;
 
-  // 🚫 Hanya proses pesan customer
-  if (
-    webhook_event !== "message_interaction" ||
-    data_event !== "receive_message_from_customer"
-  ) {
+  // Hanya proses pesan customer
+  if (webhook_event !== "message_interaction" || data_event !== "receive_message_from_customer") {
     console.log("🚫 Event bukan dari customer, diabaikan:", webhook_event, data_event);
     return res.sendStatus(200);
   }
 
-  // 🚫 Abaikan kalau bukan dari target room
-  if (room_id !== TARGET_ROOM) {
-    console.log("🚫 Pesan diabaikan dari room:", room_id);
+  // Abaikan pesan dari bot/agent
+  if (sender_id === process.env.BOT_ID || is_agent === true) {
+    console.log("🤖 Pesan dari bot/agent, diabaikan.");
     return res.sendStatus(200);
   }
 
-  // 🚫 Abaikan kalau pengirim adalah bot/agent
-  if (sender_id === BOT_ID || is_agent === true) {
-    console.log("🤖 Pesan dari bot/agent, diabaikan.");
+  // Filter: hanya dari nomor target
+  const accountId = room?.account_uniq_id?.toString().trim();
+  if (accountId !== process.env.TARGET_ACCOUNT) {
+    console.log("🚫 Pesan bukan dari nomor target, diabaikan:", accountId);
     return res.sendStatus(200);
   }
 
@@ -129,39 +131,37 @@ app.post("/webhook/qontak", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  console.log("🎯 Pesan user dari TARGET_ROOM:", userMessage);
+  console.log("✅ Pesan diterima dari nomor target:", userMessage);
 
   try {
-    // 🔹 Kirim ke Flowise
-    const flowiseRes = await axios.post(FLOWISE_URL, {
-      question: userMessage,
-    });
+    // Kirim ke Flowise
+    const flowiseRes = await axios.post(process.env.FLOWISE_URL, { question: userMessage });
+    const answer = flowiseRes?.data?.text || "Baik, kami akan segera cek, mohon ditunggu sebentar ya kak ☺️";
 
-    const answer = flowiseRes.data.text || "Maaf, saya belum bisa menjawab. pesan kamu nanti akan dijawab oleh cs kami";
-
-    // 🔹 Kirim jawaban balik ke Qontak
-    await axios.post(
-      QONTAK_URL,
-      {
-        room_id: TARGET_ROOM,
-        type: "text",
-        text: answer,
-      },
-      {
-        headers: {
-          Authorization: QONTAK_TOKEN,
-          "Content-Type": "application/json",
-        },
+    // Kirim jawaban balik ke ROOM yang sudah ditentukan di env
+    await axios.post(QONTAK_URL, {
+      room_id: process.env.TARGET_ROOM_ID, // harus string yang valid
+      type: "text",
+      text: answer
+    }, {
+      headers: {
+        Authorization: process.env.QONTAK_TOKEN, // sudah termasuk "Bearer ..."
+        "Content-Type": "application/json"
       }
-    );
-
-    console.log("📩 Jawaban terkirim ke TARGET_ROOM:", answer);
+    });
+    
+    console.log("DEBUG room_id:", process.env.TARGET_ROOM_ID);
+    console.log("DEBUG QONTAK_TOKEN:", process.env.QONTAK_TOKEN);
+    
+    console.log("📩 Jawaban terkirim ke nomor:", accountId, "->", answer);
   } catch (err) {
-    console.error("❌ Error:", err.response?.data || err.message);
+    console.error("❌ Error kirim ke Flowise/Qontak:", err.response?.data || err.message);
   }
 
   res.sendStatus(200);
 });
+
+
 
 
 
@@ -327,7 +327,7 @@ app.get("/sync-products", async (req, res) => {
 /* ================================
    POST DATA ICCID & INVOICE
 ================================ */
-app.post("/iccid", async (req, res) => {
+app.post("/save_iccid", async (req, res) => {
   try {
     const rows = req.body; // array of objects [{type, order_date, invoice, paket, iccid, code, issue, tgl_issue}, ...]
 
@@ -391,7 +391,44 @@ app.post("/iccid", async (req, res) => {
     res.status(500).json({ status: "error", message: err.message });
   }
 });
+app.get("/transactions_iccid", async (req, res) => {
+  try {
+    const { invoice, iccid } = req.query;
 
+    let baseQuery = `
+      SELECT
+        id, type, order_date, invoice, paket,
+        iccid, code, issue, tgl_issue, created_at, updated_at
+      FROM iccid_transactions
+      WHERE 1=1
+    `;
+    const values = [];
+    let idx = 1;
+
+    if (invoice) {
+      baseQuery += ` AND invoice ILIKE $${idx++}`;
+      values.push(`%${invoice}%`);
+    }
+
+    if (iccid) {
+      baseQuery += ` AND iccid ILIKE $${idx++}`;
+      values.push(`%${iccid}%`);
+    }
+
+    baseQuery += ` ORDER BY created_at DESC`;
+
+    const result = await pool.query(baseQuery, values);
+
+    res.json({
+      status: "success",
+      count: result.rowCount,
+      data: result.rows
+    });
+  } catch (err) {
+    console.error("Error fetching transactions_iccid:", err);
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
 
 
 
