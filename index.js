@@ -102,65 +102,74 @@ app.post("/cek", async (req, res) => {
 
 // 🔑 Ambil dari .env
 app.post("/webhook/qontak", async (req, res) => {
-  const body = req.body || {};
-  const { webhook_event, data_event, sender_id, is_agent, text, room } = body;
+  const { sender_id, text, room } = req.body;
 
-  // Hanya proses pesan customer
-  if (webhook_event !== "message_interaction" || data_event !== "receive_message_from_customer") {
-    console.log("🚫 Event bukan dari customer, diabaikan:", webhook_event, data_event);
-    return res.sendStatus(200);
-  }
+  // filter sender_id valid
+  if (sender_id !== process.env.ALLOWED_SENDER_ID) return res.sendStatus(200);
 
-  // Abaikan pesan dari bot/agent
-  if (sender_id === process.env.BOT_ID || is_agent === true) {
-    console.log("🤖 Pesan dari bot/agent, diabaikan.");
-    return res.sendStatus(200);
-  }
-
-  // Filter: hanya dari nomor target
-  const accountId = room?.account_uniq_id?.toString().trim();
-  if (accountId !== process.env.TARGET_ACCOUNT) {
-    console.log("🚫 Pesan bukan dari nomor target, diabaikan:", accountId);
-    return res.sendStatus(200);
-  }
-
-  // Pastikan ada teks
   const userMessage = text?.trim();
-  if (!userMessage) {
-    console.log("⚠️ Tidak ada teks, diabaikan.");
+  if (!userMessage) return res.sendStatus(200);
+
+  console.log(`📥 [${new Date().toISOString()}] ${sender_id} (${room?.id}): ${userMessage}`);
+
+  // request ke Flowise
+  const answer = await axios.post(process.env.FLOWISE_URL, { question: userMessage })
+    .then(r => r.data?.text)
+    .catch(err => {
+      console.error("❌ Error Flowise:", err.message);
+      return "";
+    });
+
+  console.log(`📤 [${new Date().toISOString()}] Flowise raw -> ${answer}`);
+
+  // Cek keyword "admin"
+  if (answer.toLowerCase().includes("admin")) {
+    const adminMessage = "Silakan sampaikan pertanyaan atau pesan Anda, saya akan membantu Anda untuk berkomunikasi dengan admin.";
+
+    await axios.post(process.env.QONTAK_URL, {
+      room_id: room?.id,
+      type: "text",
+      text: adminMessage
+    }, {
+      headers: {
+        Authorization: process.env.QONTAK_TOKEN,
+        "Content-Type": "application/json"
+      }
+    });
+
+    console.log(`🛑 Middleware admin aktif. Pesan dikirim: ${adminMessage}`);
+
+    // Blok Flowise selama 30 detik
+    setTimeout(() => {
+      console.log(`[${new Date().toISOString()}] Room ${room?.id} boleh kembali pakai Flowise`);
+    }, 30000);
+
     return res.sendStatus(200);
   }
 
-  console.log("✅ Pesan diterima dari nomor target:", userMessage);
-
-  try {
-    // Kirim ke Flowise
-    const flowiseRes = await axios.post(process.env.FLOWISE_URL, { question: userMessage });
-    const answer = flowiseRes?.data?.text || "Baik, kami akan segera cek, mohon ditunggu sebentar ya kak ☺️";
-
-    // Kirim jawaban balik ke ROOM yang sudah ditentukan di env
-    await axios.post(QONTAK_URL, {
-      room_id: process.env.TARGET_ROOM_ID, // harus string yang valid
+  // Kalau bukan admin, lanjut kirim jawaban Flowise normal
+  if (answer) {
+    await axios.post(process.env.QONTAK_URL, {
+      room_id: room?.id,
       type: "text",
       text: answer
     }, {
       headers: {
-        Authorization: process.env.QONTAK_TOKEN, // sudah termasuk "Bearer ..."
+        Authorization: process.env.QONTAK_TOKEN,
         "Content-Type": "application/json"
       }
     });
-    
-    console.log("DEBUG room_id:", process.env.TARGET_ROOM_ID);
-    console.log("DEBUG QONTAK_TOKEN:", process.env.QONTAK_TOKEN);
-    
-    console.log("📩 Jawaban terkirim ke nomor:", accountId, "->", answer);
-  } catch (err) {
-    console.error("❌ Error kirim ke Flowise/Qontak:", err.response?.data || err.message);
   }
 
   res.sendStatus(200);
 });
 
+
+
+
+
+
+  
 
 
 
@@ -391,6 +400,8 @@ app.post("/save_iccid", async (req, res) => {
     res.status(500).json({ status: "error", message: err.message });
   }
 });
+
+
 app.get("/transactions_iccid", async (req, res) => {
   try {
     const { invoice, iccid } = req.query;
