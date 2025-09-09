@@ -101,147 +101,78 @@ app.post("/cek", async (req, res) => {
 ================================ */
 
 // 🔑 Ambil dari .env
+// Simpan state blok per room
+// state blok per room
+const adminRooms = {}; // { roomId: { blockedUntil: timestamp, messageSent: boolean } }
+
+function isBlocked(roomId) {
+  return adminRooms[roomId] && adminRooms[roomId].blockedUntil > Date.now();
+}
+
+function blockRoom(roomId, durationMs) {
+  adminRooms[roomId] = { blockedUntil: Date.now() + durationMs, messageSent: false };
+}
+
 app.post("/webhook/qontak", async (req, res) => {
   const { sender_id, text, room } = req.body;
-
-  // filter sender_id valid
   if (sender_id !== process.env.ALLOWED_SENDER_ID) return res.sendStatus(200);
-
   const userMessage = text?.trim();
   if (!userMessage) return res.sendStatus(200);
 
   console.log(`📥 [${new Date().toISOString()}] ${sender_id} (${room?.id}): ${userMessage}`);
 
-  // request ke Flowise
-  const answer = await axios.post(process.env.FLOWISE_URL, { question: userMessage })
-    .then(r => r.data?.text)
-    .catch(err => {
-      console.error("❌ Error Flowise:", err.message);
-      return "";
-    });
+  // cek blok admin
+  if (isBlocked(room.id)) {
+    if (!adminRooms[room.id].messageSent) {
+      // kirim pesan satu kali
+      await axios.post(process.env.QONTAK_URL, {
+        room_id: room.id,
+        type: "text",
+        text: "Pesan Anda sedang diteruskan ke admin. Mohon tunggu sebentar."
+      }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
 
-  console.log(`📤 [${new Date().toISOString()}] Flowise raw -> ${answer}`);
-
-  // Cek keyword "admin"
-  if (answer.toLowerCase().includes("admin")) {
-    const adminMessage = "Silakan sampaikan pertanyaan atau pesan Anda, saya akan membantu Anda untuk berkomunikasi dengan admin.";
-
-    await axios.post(process.env.QONTAK_URL, {
-      room_id: room?.id,
-      type: "text",
-      text: adminMessage
-    }, {
-      headers: {
-        Authorization: process.env.QONTAK_TOKEN,
-        "Content-Type": "application/json"
-      }
-    });
-
-    console.log(`🛑 Middleware admin aktif. Pesan dikirim: ${adminMessage}`);
-
-    // Blok Flowise selama 30 detik
-    setTimeout(() => {
-      console.log(`[${new Date().toISOString()}] Room ${room?.id} boleh kembali pakai Flowise`);
-    }, 30000);
-
+      adminRooms[room.id].messageSent = true; // tandai sudah dikirim
+      console.log(`🛑 Middleware admin aktif. Pesan dikirim sekali.`);
+    } else {
+      console.log(`🛑 Room ${room.id} sedang ditangani admin. Flowise diblok, pesan default sudah dikirim sebelumnya.`);
+    }
     return res.sendStatus(200);
   }
 
-  // Kalau bukan admin, lanjut kirim jawaban Flowise normal
+  // request ke Flowise
+  const answer = await axios.post(process.env.FLOWISE_URL, { question: userMessage })
+    .then(r => r.data?.text)
+    .catch(err => { console.error("❌ Error Flowise:", err.message); return ""; });
+
+  console.log(`📤 [${new Date().toISOString()}] Flowise raw -> ${answer}`);
+
+  // cek keyword admin
+  if (answer.toLowerCase().includes("admin")) {
+    const adminMessage = "Silakan sampaikan pertanyaan atau pesan Anda, saya akan membantu Anda untuk berkomunikasi dengan admin.";
+    await axios.post(process.env.QONTAK_URL, {
+      room_id: room.id,
+      type: "text",
+      text: adminMessage
+    }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
+
+    console.log(`🛑 Middleware admin aktif. Pesan dikirim: ${adminMessage}`);
+    blockRoom(room.id, 60_000); // blok 1 menit
+    return res.sendStatus(200);
+  }
+
+  // kirim jawaban Flowise normal
   if (answer) {
     await axios.post(process.env.QONTAK_URL, {
-      room_id: room?.id,
+      room_id: room.id,
       type: "text",
       text: answer
-    }, {
-      headers: {
-        Authorization: process.env.QONTAK_TOKEN,
-        "Content-Type": "application/json"
-      }
-    });
+    }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
   }
 
   res.sendStatus(200);
 });
 
 
-
-
-
-
-  
-
-
-
-
-/* ================================
-   ROUTE AMBIL DATA GOOGLE SHEET
-================================ */
-// middleware body parser dengan limit besar
-
-// ambil semua produk dari database
-
-
-
-// Set API key (bisa juga simpan di .env)
-const API_KEY = process.env.API_KEY || "rahasia123";
-
-app.get("/products", async (req, res) => {
-  try {
-    // Cek API key dari header
-    const apiKey = req.headers["x-api-key"];
-    if (!apiKey || apiKey !== API_KEY) {
-      return res.status(401).json({ status: "error", message: "Unauthorized. API key invalid atau tidak diberikan." });
-    }
-
-    const { supplier, country } = req.query;
-
-    let query = `
-      SELECT 
-        id, id_produk, merek, nama_produk, deskripsi_produk,
-        komisi_afiliasi, supplier, coverage_negara, sku,
-        tautan_web, created_at, updated_at
-      FROM products
-      WHERE 1=1
-    `;
-
-    const values = [];
-    let i = 1;
-
-    // Filter supplier (SIM Card atau eSim)
-    if (supplier) {
-      query += ` AND LOWER(supplier) LIKE LOWER($${i++})`;
-      values.push(`%${supplier.trim()}%`);
-    }
-
-    // Filter negara tujuan
-    if (country) {
-      query += ` AND coverage_negara ILIKE $${i++}`;
-      values.push(`%${country.trim()}%`);
-    }
-
-    query += ` ORDER BY updated_at DESC LIMIT 5`;
-
-    const result = await pool.query(query, values);
-
-    if (!result.rows || result.rows.length === 0) {
-      return res.json({
-        status: "error",
-        message: `Maaf, kami tidak menemukan produk untuk ${country || "negara tersebut"}.`
-      });
-    }
-
-    res.json({
-      status: "success",
-      total: result.rowCount,
-      products: result.rows
-    });
-
-  } catch (err) {
-    console.error("❌ Error ambil data:", err.message);
-    res.status(500).json({ status: "error", message: err.message });
-  }
-});
 
 
 
