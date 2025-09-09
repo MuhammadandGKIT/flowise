@@ -13,7 +13,7 @@ const FLOWISE_URL = process.env.FLOWISE_URL;
 const QONTAK_TOKEN = process.env.QONTAK_TOKEN;
 const QONTAK_URL = process.env.QONTAK_URL;
 const BOT_ID = process.env.BOT_ID;
-const TARGET_SENDER = process.env.TARGET_SENDER;     // sender_id
+const TARGET_SENDER = process.env.TARGET_SENDER;     
 const TARGET_ACCOUNT = process.env.TARGET_ACCOUNT;   
 const PORT = process.env.PORT || 3001;
 
@@ -399,7 +399,7 @@ app.get("/", (req, res) => {
         <div class="endpoint"><code>GET /products</code> → Ambil produk dari database. Query: supplier, country. <b>Wajib header x-api-key</b></div>
         <div class="endpoint"><code>GET /sync-products</code> → Sinkronisasi produk dari Google Sheet (GAS) ke database</div>
         <div class="endpoint"><code>POST /iccid</code> → Insert/update data ICCID & invoice ke database</div>
-
+        <div class="endpoint"><code>POST /transactions_iccid</code> → Data ICCID dan Invoice</div>
         <div class="note">
           🔑 Gunakan API key pada header <code>x-api-key</code> untuk endpoint yang butuh autentikasi.
         </div>
