@@ -1,4 +1,5 @@
 const express = require("express");
+
 const Papa = require("papaparse");
 const axios = require("axios");
 require("dotenv").config();
@@ -16,10 +17,17 @@ const BOT_ID = process.env.BOT_ID;
 const TARGET_SENDER = process.env.TARGET_SENDER;     
 const TARGET_ACCOUNT = process.env.TARGET_ACCOUNT;   
 const PORT = process.env.PORT || 3001;
-
-// Middleware: parsing body JSON & form-urlencoded dengan limit besar
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
+
+
+
+/**
+ * @route POST /cek
+ * @description Mengecek data penggunaan ICCID via API gkomunika.
+ * @param {string} req.body.nomor - Nomor ICCID yang akan dicek.
+ * @returns {Object} JSON hasil pengecekan, termasuk bundle, status, usage per negara, dll.
+ */
 /* ================================
    ROUTE CEK DATA USAGE
 ================================ */
@@ -103,74 +111,107 @@ app.post("/cek", async (req, res) => {
 // 🔑 Ambil dari .env
 // Simpan state blok per room
 // state blok per room
-const adminRooms = {}; // { roomId: { blockedUntil: timestamp, messageSent: boolean } }
 
+// ====== State blok per room ======
+const adminRooms = {}; // { roomId: { messageSent: boolean } }
+
+// Cek apakah room sedang diblok
 function isBlocked(roomId) {
-  return adminRooms[roomId] && adminRooms[roomId].blockedUntil > Date.now();
+  return !!adminRooms[roomId]; // paksa boolean
 }
 
-function blockRoom(roomId, durationMs) {
-  adminRooms[roomId] = { blockedUntil: Date.now() + durationMs, messageSent: false };
+// Blok room selamanya (pesan admin sudah dikirim)
+function blockRoomForever(roomId) {
+  adminRooms[roomId] = { messageSent: true };
 }
 
+// ====== Webhook Qontak ======
 app.post("/webhook/qontak", async (req, res) => {
-  const { sender_id, text, room } = req.body;
-  if (sender_id !== process.env.ALLOWED_SENDER_ID) return res.sendStatus(200);
-  const userMessage = text?.trim();
-  if (!userMessage) return res.sendStatus(200);
+  const { sender_id, text, room } = req.body || {};
+  const roomId = room?.id;
 
-  console.log(`📥 [${new Date().toISOString()}] ${sender_id} (${room?.id}): ${userMessage}`);
+  // Filter: sender harus sesuai dan room & text ada
+  if (sender_id !== process.env.ALLOWED_SENDER_ID || !roomId || !text) {
+    // console.log(`⚠️ Pesan dari sender tidak diizinkan atau payload kosong. sender_id=${sender_id}, roomId=${roomId}`);
+    return res.sendStatus(200);
+  }
 
-  // cek blok admin
-  if (isBlocked(room.id)) {
-    if (!adminRooms[room.id].messageSent) {
-      // kirim pesan satu kali
-      await axios.post(process.env.QONTAK_URL, {
-        room_id: room.id,
-        type: "text",
-        text: "Pesan Anda sedang diteruskan ke admin. Mohon tunggu sebentar."
-      }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
+  const userMessage = text.trim();
+  console.log(`📥 [${new Date().toISOString()}] ${sender_id} (${roomId}): ${userMessage}`);
 
-      adminRooms[room.id].messageSent = true; // tandai sudah dikirim
-      console.log(`🛑 Middleware admin aktif. Pesan dikirim sekali.`);
+  // ====== Cek blok admin ======
+  if (isBlocked(roomId)) {
+    if (!adminRooms[roomId].messageSent) {
+      try {
+        await axios.post(process.env.QONTAK_URL, {
+          room_id: roomId,
+          type: "text",
+          text: "Pesan Anda sedang diteruskan ke admin. Mohon tunggu sebentar."
+        }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
+
+        adminRooms[roomId].messageSent = true;
+        console.log(`🛑 Middleware admin aktif. Pesan dikirim sekali.`);
+      } catch (err) {
+        console.error("❌ Error kirim pesan admin:", err.message);
+      }
     } else {
-      console.log(`🛑 Room ${room.id} sedang ditangani admin. Flowise diblok, pesan default sudah dikirim sebelumnya.`);
+      console.log(`🛑 Room ${roomId} sedang ditangani admin. Flowise diblok.`);
     }
     return res.sendStatus(200);
   }
 
-  // request ke Flowise
-  const answer = await axios.post(process.env.FLOWISE_URL, { question: userMessage })
-    .then(r => r.data?.text)
-    .catch(err => { console.error("❌ Error Flowise:", err.message); return ""; });
+  // ====== Request ke Flowise ======
+  let answer = "";
+  try {
+    const r = await axios.post(process.env.FLOWISE_URL, { question: userMessage });
+    answer = r.data?.text || "";
+  } catch (err) {
+    console.error("❌ Error Flowise:", err.message);
+  }
 
   console.log(`📤 [${new Date().toISOString()}] Flowise raw -> ${answer}`);
 
-  // cek keyword admin
+  // ====== Cek keyword admin ======
   if (answer.toLowerCase().includes("admin")) {
     const adminMessage = "Silakan sampaikan pertanyaan atau pesan Anda, saya akan membantu Anda untuk berkomunikasi dengan admin.";
-    await axios.post(process.env.QONTAK_URL, {
-      room_id: room.id,
-      type: "text",
-      text: adminMessage
-    }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
+    try {
+      await axios.post(process.env.QONTAK_URL, {
+        room_id: roomId,
+        type: "text",
+        text: adminMessage
+      }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
 
-    console.log(`🛑 Middleware admin aktif. Pesan dikirim: ${adminMessage}`);
-    blockRoom(room.id, 60_000); // blok 1 menit
+      blockRoomForever(roomId);
+      console.log(`🛑 Middleware admin aktif. Room ${roomId} diblok selamanya.`);
+    } catch (err) {
+      console.error("❌ Error kirim pesan admin:", err.message);
+    }
     return res.sendStatus(200);
   }
 
-  // kirim jawaban Flowise normal
+  // ====== Kirim jawaban Flowise normal ======
   if (answer) {
-    await axios.post(process.env.QONTAK_URL, {
-      room_id: room.id,
-      type: "text",
-      text: answer
-    }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
+    try {
+      await axios.post(process.env.QONTAK_URL, {
+        room_id: roomId,
+        type: "text",
+        text: answer
+      }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
+    } catch (err) {
+      console.error("❌ Error kirim jawaban Flowise:", err.message);
+    }
   }
 
   res.sendStatus(200);
 });
+
+// ====== Jalankan server ======
+app.listen(PORT, () => {
+  console.log(`✅ Server gabungan jalan di http://localhost:${PORT} 🚀`);
+});
+
+
+
 
 
 

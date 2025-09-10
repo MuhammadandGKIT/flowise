@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "all": "concurrently \"npm run dev\" \"echo '✅ Semua service jalan'\""
+    "all": "concurrently \"npm run dev\" \"echo '✅ Semua service jalan'\"",
+    "docs": "npx typedoc --out docs src"
   },
   "dependencies": {
     "axios": "^1.11.0",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
-    "nodemon": "^3.1.10"
+    "nodemon": "^3.1.10",
+    "typedoc": "^0.28.12"
   }
 }
