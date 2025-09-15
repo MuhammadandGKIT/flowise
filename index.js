@@ -19,7 +19,7 @@ const TARGET_ACCOUNT = process.env.TARGET_ACCOUNT;
 const PORT = process.env.PORT || 3001;
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
-
+const client = require("./redisClient");
 
 
 /**
@@ -111,135 +111,217 @@ app.post("/cek", async (req, res) => {
 // 🔑 Ambil dari .env
 // Simpan state blok per room
 // state blok per room
+const MAX_CONTEXT_MESSAGES = 10;
+const BLOCK_DURATION_MS = 60_000;
+const BUFFER_TIMEOUT = 10_000;
 
-// ====== State blok per room ======
-const adminRooms = {}; // { roomId: { messageSent: boolean } }
+const adminRooms = {};
+const bufferStore = {};
+const bufferTimers = {};
 
-// Cek apakah room sedang diblok
 function isBlocked(roomId) {
-  return !!adminRooms[roomId]; // paksa boolean
+  return adminRooms[roomId] && adminRooms[roomId].blockedUntil > Date.now();
 }
 
-// Blok room selamanya (pesan admin sudah dikirim)
-function blockRoomForever(roomId) {
-  adminRooms[roomId] = { messageSent: true };
+function blockRoom(roomId, durationMs) {
+  adminRooms[roomId] = { blockedUntil: Date.now() + durationMs, messageSent: false };
 }
 
-// ====== Webhook Qontak ======
+// Ambil context terbaru dari Redis
+async function buildFullContext(roomKey, summaryKey) {
+  const recentRaw = await client.lRange(roomKey, -MAX_CONTEXT_MESSAGES, -1);
+  const recentMessages = recentRaw.map(msg => JSON.parse(msg));
+
+  const contextText = recentMessages
+    .map(msg => {
+      if (msg.role === "user") return `User: ${msg.text}`;
+      if (msg.role === "agent") return `Agent: ${msg.text}`;
+      if (msg.role === "context") return `Context: ${msg.text}`;
+    })
+    .join("\n");
+
+  const prevSummary = await client.get(summaryKey) || "";
+  return prevSummary ? `${prevSummary}\n${contextText}` : contextText;
+}
+
+// Simpan pesan ke Redis
+async function pushToRedis(roomKey, role, text) {
+  await client.rPush(roomKey, JSON.stringify({ role, text }));
+}
+
 app.post("/webhook/qontak", async (req, res) => {
-  const { sender_id, text, room } = req.body || {};
-  const roomId = room?.id;
+  const { sender_id, text, room, file } = req.body;
+  if (sender_id !== process.env.ALLOWED_SENDER_ID) return res.sendStatus(200);
 
-  // Filter: sender harus sesuai dan room & text ada
-  if (sender_id !== process.env.ALLOWED_SENDER_ID || !roomId || !text) {
-    // console.log(`⚠️ Pesan dari sender tidak diizinkan atau payload kosong. sender_id=${sender_id}, roomId=${roomId}`);
-    return res.sendStatus(200);
-  }
+  const userMessage = text?.trim();
+  const fileUrl = file?.url || null;
+  if (!userMessage && !fileUrl) return res.sendStatus(200);
 
-  const userMessage = text.trim();
-  console.log(`📥 [${new Date().toISOString()}] ${sender_id} (${roomId}): ${userMessage}`);
+  console.log(`📥 [${new Date().toISOString()}] ${sender_id} (${room?.id}): ${userMessage || "(file)"}`);
 
-  // ====== Cek blok admin ======
-  if (isBlocked(roomId)) {
-    if (!adminRooms[roomId].messageSent) {
-      try {
-        await axios.post(process.env.QONTAK_URL, {
-          room_id: roomId,
-          type: "text",
-          text: "Pesan Anda sedang diteruskan ke admin. Mohon tunggu sebentar."
-        }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
-
-        adminRooms[roomId].messageSent = true;
-        console.log(`🛑 Middleware admin aktif. Pesan dikirim sekali.`);
-      } catch (err) {
-        console.error("❌ Error kirim pesan admin:", err.message);
-      }
-    } else {
-      console.log(`🛑 Room ${roomId} sedang ditangani admin. Flowise diblok.`);
+  if (isBlocked(room.id)) {
+    if (!adminRooms[room.id].messageSent) {
+      await axios.post(process.env.QONTAK_URL, {
+        room_id: room.id,
+        type: "text",
+        text: "Pesan Anda sedang diteruskan ke admin. Mohon tunggu sebentar."
+      }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
+      adminRooms[room.id].messageSent = true;
     }
     return res.sendStatus(200);
   }
 
-  // ====== Request ke Flowise ======
-  let answer = "";
-  try {
-    const r = await axios.post(process.env.FLOWISE_URL, { question: userMessage });
-    answer = r.data?.text || "";
-  } catch (err) {
-    console.error("❌ Error Flowise:", err.message);
+  const roomKey = `room:${room.id}:messages`;
+  const summaryKey = `room:${room.id}:summary`;
+
+  if (!bufferStore[room.id]) bufferStore[room.id] = [];
+  bufferStore[room.id].push(fileUrl ? { type: "file", url: fileUrl, text: userMessage } : { type: "text", text: userMessage });
+
+  if (fileUrl) {
+    await axios.post(process.env.QONTAK_URL, {
+      room_id: room.id,
+      type: "text",
+      text: "📷 Gambar Anda diterima dan sedang dianalisis..."
+    }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
   }
 
-  console.log(`📤 [${new Date().toISOString()}] Flowise raw -> ${answer}`);
+  if (bufferTimers[room.id]) clearTimeout(bufferTimers[room.id]);
 
-  // ====== Cek keyword admin ======
-  if (answer.toLowerCase().includes("admin")) {
-    const adminMessage = "Silakan sampaikan pertanyaan atau pesan Anda, saya akan membantu Anda untuk berkomunikasi dengan admin.";
+  bufferTimers[room.id] = setTimeout(async () => {
+    const messages = bufferStore[room.id];
+    bufferStore[room.id] = [];
+
+    const combinedText = messages.filter(m => m.type === "text").map(m => m.text).join(" ");
+    const files = messages.filter(m => m.type === "file");
+
+    console.log("➡️ Gabungan bubble ->", combinedText, files.map(f => f.url));
+
+    let answer = "";
+
     try {
+      // 🔹 Analisis gambar dulu jika ada
+      if (files.length > 0) {
+        const resp = await axios.post(process.env.CHAT_FLOW_URL, {
+          question: combinedText || "",
+          uploads: files.map((f, i) => ({
+            data: f.url,
+            type: "url",
+            name: `Flowise_${i}.jpeg`,
+            mime: "image/jpeg"
+          }))
+        }, {
+          headers: { Authorization: `Bearer ${process.env.FLOWISE_API_KEY}`, "Content-Type": "application/json" }
+        });
+
+        const chatFlowAnswer = resp.data?.text || "";
+        const userLog = `User mengirim gambar: ${files.map(f => f.url).join(", ")} ${combinedText || ""}`;
+
+        await pushToRedis(roomKey, "user", userLog);
+        await pushToRedis(roomKey, "context", chatFlowAnswer);
+
+        console.log("📂 Hasil analisis gambar:", chatFlowAnswer, "\n📂 Disimpan ke Redis sebagai context untuk AgentFlow");
+      }
+
+      // 🔹 Ambil context terbaru dari Redis sebelum kirim ke AgentFlow
+      const fullContext = await buildFullContext(roomKey, summaryKey);
+
+      // Kirim ke AgentFlow
+      const respAgent = await axios.post(process.env.AGENT_FLOW_URL, {
+        question: combinedText,
+        context: fullContext
+      }, {
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.AGENT_API_KEY}` }
+      });
+
+      answer = respAgent.data?.text || "";
+
+      await pushToRedis(roomKey, "user", combinedText);
+      await pushToRedis(roomKey, "agent", answer);
+
+      // Update summary maksimal 1000 karakter
+      const updatedContext = await buildFullContext(roomKey, summaryKey);
+      await client.set(summaryKey, updatedContext.length > 1000 ? updatedContext.slice(-1000) : updatedContext);
+
+      if (answer) {
+        await axios.post(process.env.QONTAK_URL, {
+          room_id: room.id,
+          type: "text",
+          text: answer
+        }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
+      }
+
+    } catch (err) {
+      console.error("❌ Error Flowise/AgentFlow:", err.response?.data || err.message);
+    }
+
+    // 🔹 Cek keyword admin
+    if (answer && answer.toLowerCase().includes("admin")) {
+      const adminMessage = "Silakan sampaikan pertanyaan atau pesan Anda, saya akan membantu Anda untuk berkomunikasi dengan admin.";
       await axios.post(process.env.QONTAK_URL, {
-        room_id: roomId,
+        room_id: room.id,
         type: "text",
         text: adminMessage
       }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
 
-      blockRoomForever(roomId);
-      console.log(`🛑 Middleware admin aktif. Room ${roomId} diblok selamanya.`);
-    } catch (err) {
-      console.error("❌ Error kirim pesan admin:", err.message);
+      blockRoom(room.id, BLOCK_DURATION_MS);
     }
-    return res.sendStatus(200);
-  }
 
-  // ====== Kirim jawaban Flowise normal ======
-  if (answer) {
-    try {
-      await axios.post(process.env.QONTAK_URL, {
-        room_id: roomId,
-        type: "text",
-        text: answer
-      }, { headers: { Authorization: process.env.QONTAK_TOKEN, "Content-Type": "application/json" } });
-    } catch (err) {
-      console.error("❌ Error kirim jawaban Flowise:", err.message);
-    }
-  }
+    console.log(`📤 [${new Date().toISOString()}] Flowise + AgentFlow raw -> ${answer}`);
+  }, BUFFER_TIMEOUT);
 
   res.sendStatus(200);
 });
 
-// ====== Jalankan server ======
-app.listen(PORT, () => {
-  console.log(`✅ Server gabungan jalan di http://localhost:${PORT} 🚀`);
-});
 
 
 
 
-
-
-
-
-
-//post data product
-
+/**
+ * ===============================
+ * ROUTE: Sinkronisasi Produk
+ * ===============================
+ * Endpoint ini digunakan untuk mengambil data produk dari Google Sheets (GAS),
+ * memetakan data sesuai format database, dan menyimpan/ memperbarui data
+ * tersebut di database PostgreSQL.
+ *
+ * Cara Kerja:
+ * 1. Ambil data dari Google Apps Script (GAS)
+ * 2. Map & filter data sesuai header Google Sheet
+ * 3. Insert atau update data ke database (upsert)
+ */
 
 app.get("/sync-products", async (req, res) => {
   try {
-    // 1. Ambil data dari GAS
+    // ===============================
+    // 1️⃣ Ambil data produk dari GAS
+    // ===============================
     const response = await fetch(GAS_URL);
 
+    // Jika gagal fetch data dari GAS, tampilkan error
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`GAS fetch failed: ${response.status} ${response.statusText}. Response: ${text.substring(0, 200)}...`);
+      throw new Error(
+        `GAS fetch failed: ${response.status} ${response.statusText}. Response: ${text.substring(0, 200)}...`
+      );
     }
 
     const products = await response.json();
 
+    // Jika data kosong, langsung kembalikan response sukses tapi total 0
     if (!Array.isArray(products) || products.length === 0) {
-      return res.json({ status: "success", total: 0, message: "Tidak ada produk di GAS" });
+      return res.json({
+        status: "success",
+        total: 0,
+        message: "Tidak ada produk di GAS",
+      });
     }
 
-    // 2. Mapping & filter data sesuai header dari Google Sheet
+    // =========================================
+    // 2️⃣ Mapping & Filter data sesuai header
+    // =========================================
+    // Tujuannya untuk memastikan field sesuai dengan tabel database
     const mappedProducts = products
-      .map(p => ({
+      .map((p) => ({
         id_produk: p["ID Produk"]?.toString().trim() || null,
         merek: p["Merek"] || null,
         nama_produk: p["Nama Produk"] || null,
@@ -255,9 +337,12 @@ app.get("/sync-products", async (req, res) => {
         tautan_web: p["Tautan Web"] || null,
         tautan_tokopedia: p["Tautan Tokopedia"] || null,
       }))
-      .filter(p => p.id_produk); // skip baris tanpa ID Produk
+      .filter((p) => p.id_produk); // skip baris tanpa ID Produk
 
-    // 3. Insert/Update ke DB
+    // =========================================
+    // 3️⃣ Insert atau Update data ke Database
+    // =========================================
+    // Menggunakan UPSERT (INSERT ... ON CONFLICT) untuk menghindari duplikasi
     for (const prod of mappedProducts) {
       await pool.query(
         `INSERT INTO products (
@@ -293,16 +378,100 @@ app.get("/sync-products", async (req, res) => {
       );
     }
 
+    // ===============================
+    // 4️⃣ Response sukses
+    // ===============================
     res.json({
       status: "success",
       total: mappedProducts.length,
       message: `Berhasil menyimpan ${mappedProducts.length} produk ke database 🚀`,
     });
   } catch (err) {
-    console.error("❌ Error sync ke DB:", err);
+    // ===============================
+    // Error Handling
+    // ===============================
+    console.error("❌ Error sinkronisasi ke DB:", err);
     res.status(500).json({ status: "error", message: err.message });
   }
 });
+
+
+
+
+
+
+/**
+ * ===============================
+ * ROUTE: Ambil Daftar Produk
+ * ===============================
+ * Endpoint ini digunakan untuk mengambil data produk dari database.
+ * Hanya mengembalikan field tertentu: nama_produk, supplier, deskripsi_produk,
+ * coverage_negara, dan tautan_web.
+ *
+ * Fitur:
+ * - Pencarian berdasarkan nama_produk
+ * - Mengembalikan list produk sesuai query pencarian (jika ada)
+ */
+app.get("/products", async (req, res) => {
+  try {
+    // ===============================
+    // 1️⃣ Cek API Key
+    // ===============================
+    // const apiKey = req.headers["x-api-key"]; // client harus kirim header 'x-api-key'
+    // if (!apiKey || apiKey !== process.env.PRODUCTS_API_KEY) {
+    //   return res.status(401).json({
+    //     status: "error",
+    //     message: "Unauthorized. API Key invalid atau tidak diberikan.",
+    //   });
+    // }
+
+    // ===============================
+    // 2️⃣ Ambil query parameter 'search'
+    // ===============================
+    const search = req.query.search || "";
+
+    // ===============================
+    // 3️⃣ Query database (flexible search)
+    // ===============================
+    const queryText = `
+      SELECT 
+        nama_produk, 
+        supplier, 
+        deskripsi_produk, 
+        coverage_negara, 
+        tautan_web
+      FROM products
+      WHERE 
+        nama_produk ILIKE $1 OR
+        deskripsi_produk ILIKE $1 OR
+        coverage_negara ILIKE $1
+      ORDER BY nama_produk ASC
+    `;
+    const { rows } = await pool.query(queryText, [`%${search}%`]);
+
+    // ===============================
+    // 4️⃣ Response sukses
+    // ===============================
+    res.json({
+      status: "success",
+      total: rows.length,
+      data: rows,
+    });
+  } catch (err) {
+    // ===============================
+    // Error handling
+    // ===============================
+    console.error("❌ Error mengambil data produk:", err);
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+
+
+
+
+
+
 
 
 /* ================================
@@ -374,6 +543,8 @@ app.post("/save_iccid", async (req, res) => {
 });
 
 
+
+
 app.get("/transactions_iccid", async (req, res) => {
   try {
     const { invoice, iccid } = req.query;
@@ -415,6 +586,31 @@ app.get("/transactions_iccid", async (req, res) => {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* ================================
    ROUTE DEFAULT
 ================================ */
@@ -439,7 +635,7 @@ app.get("/", (req, res) => {
         <div class="endpoint"><code>POST /webhook/qontak</code> → Webhook Qontak, otomatis balas via Flowise</div>
         <div class="endpoint"><code>GET /products</code> → Ambil produk dari database. Query: supplier, country. <b>Wajib header x-api-key</b></div>
         <div class="endpoint"><code>GET /sync-products</code> → Sinkronisasi produk dari Google Sheet (GAS) ke database</div>
-        <div class="endpoint"><code>POST /iccid</code> → Insert/update data ICCID & invoice ke database</div>
+        <div class="endpoint"><code>POST /save_iccid</code> → Insert/update data ICCID & invoice ke database</div>
         <div class="endpoint"><code>POST /transactions_iccid</code> → Data ICCID dan Invoice</div>
         <div class="note">
           🔑 Gunakan API key pada header <code>x-api-key</code> untuk endpoint yang butuh autentikasi.

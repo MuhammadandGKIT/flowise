@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# Script untuk testing middleware gambar Qontak ke Flowise
+
+BASE_URL="http://localhost:3001"
+
+echo "=== 1. Health Check ==="
+curl -X GET $BASE_URL/health | jq '.'
+
+echo -e "\n=== 2. Test dengan URL Gambar Qontak Asli ==="
+curl -X POST http://localhost:3001/test/url \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Tolong analisis gambar ini, apa yang kamu lihat?",
+    "imageUrl": "https://cdn.qontak.com/uploads/message/file/fb84fc28-d712-4a42-bdb5-96447a77cfd8/1928775971247996.jpeg",
+    "sessionId": "test-qontak-123"
+  }' | jq '.'
+
+echo -e "\n=== 3. Simulasi Webhook dari Qontak ==="
+curl -X POST $BASE_URL/webhook/qontak \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Bisa bantu analisis gambar ini?",
+    "from": "6281234567890",
+    "imageUrl": "https://cdn.qontak.com/uploads/message/file/fb84fc28-d712-4a42-bdb5-96447a77cfd8/1928775971247996.jpeg"
+  }' | jq '.'
+
+echo -e "\n=== 4. Test Upload File Lokal ==="
+# Pastikan ada file test-image.jpg di direktori ini
+if [ -f "test-image.jpg" ]; then
+  curl -X POST $BASE_URL/test/upload \
+    -F "image=@test-image.jpg" \
+    -F "message=Analisis gambar yang di-upload ini" \
+    -F "sessionId=upload-test-456" | jq '.'
+else
+  echo "File test-image.jpg tidak ditemukan. Skip test upload file."
+fi
+
+echo -e "\n=== 5. Test dengan URL Gambar Sample Lain ==="
+curl -X POST $BASE_URL/test/url \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Jelaskan apa yang ada di gambar ini",
+    "imageUrl": "https://via.placeholder.com/800x600/4CAF50/white?text=Sample+Image+for+Testing",
+    "sessionId": "sample-test-789"
+  }' | jq '.'
+
+echo -e "\n=== 6. Test Error Case - URL Tidak Valid ==="
+curl -X POST $BASE_URL/test/url \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Test error handling",
+    "imageUrl": "https://invalid-url-12345.com/nonexistent.jpg",
+    "sessionId": "error-test"
+  }' | jq '.'
+
+echo -e "\n=== 7. Test Webhook Tanpa Gambar (Text Only) ==="
+curl -X POST $BASE_URL/webhook/qontak \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Halo, apa kabar? Ini pesan teks biasa tanpa gambar.",
+    "from": "6281234567890"
+  }' | jq '.'
+
+echo -e "\n=== Testing Complete ==="
+
+# Tambahan: Download gambar Qontak untuk testing manual
+echo -e "\n=== Bonus: Download gambar Qontak untuk testing manual ==="
+echo "Downloading Qontak image..."
+curl -o "qontak-sample.jpeg" "https://cdn.qontak.com/uploads/message/file/fb84fc28-d712-4a42-bdb5-96447a77cfd8/1928775971247996.jpeg"
+
+if [ -f "qontak-sample.jpeg" ]; then
+  echo "✅ Gambar berhasil didownload sebagai qontak-sample.jpeg"
+  echo "Ukuran file: $(ls -lh qontak-sample.jpeg | awk '{print $5}')"
+  
+  # Test upload gambar yang baru didownload
+  echo -e "\n=== 8. Test Upload Gambar Qontak yang Didownload ==="
+  curl -X POST $BASE_URL/test/upload \
+    -F "image=@qontak-sample.jpeg" \
+    -F "message=Analisis gambar Qontak yang sudah didownload" \
+    -F "sessionId=downloaded-qontak-test" | jq '.'
+else
+  echo "❌ Gagal download gambar Qontak"
+fi
