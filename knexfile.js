@@ -5,8 +5,8 @@ module.exports = {
         host: "101.50.2.61",
         port: 5433,
         user: "postgres",
-        password: "Rivian1207",
-        database: "postgres",
+        password: "Globalkomunika12",
+        database: "Chatbot",
       },
       migrations: {
         directory: "./db/migrations"

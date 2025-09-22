@@ -115,7 +115,7 @@ app.post("/cek", async (req, res) => {
 
 // ====== CONFIG & STATE ======
 const MAX_CONTEXT_MESSAGES = 10;
-const BUFFER_TIMEOUT = 0;
+const BUFFER_TIMEOUT = 10_000;
 
 const bufferStore = {};
 const bufferTimers = {};

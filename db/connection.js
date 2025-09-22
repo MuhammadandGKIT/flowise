@@ -4,8 +4,8 @@ const { Pool } = require("pg");
 const pool = new Pool({
   user: "postgres",              // user default PostgreSQL
   host: "101.50.2.61",           // IP VPS kamu
-  database: "postgres",          // database default yang kamu buat
-  password: "Rivian1207",        // password PostgreSQL
+  database: "Chatbot",          // database default yang kamu buat
+  password: "Globalkomunika12",        // password PostgreSQL
   port: 5433,                    // pakai port mapping Docker
 });
 
