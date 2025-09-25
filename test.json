@@ -1,0 +1,55 @@
+{
+  "status": "success",
+  "data": [
+    {
+      "id": "471b3f67-1733-4ad3-9f2a-4963d757b00e",
+      "organization_id": "2e2d9bef-e693-42ce-927d-c500d391e7e0",
+      "full_name": "Staff GK 2",
+      "email": "globalkomunika.cs2@gmail.com",
+      "phone": "+628112090550",
+      "role": "agent",
+      "avatar": {
+        "url": "https://cdn.qontak.com/uploads/user/avatar/bf328531-ffc9-4f93-a7f4-f2f707970e7c/RackMultipart20250109-23-1nwxfje.png",
+        "large": {
+          "url": "https://cdn.qontak.com/uploads/user/avatar/bf328531-ffc9-4f93-a7f4-f2f707970e7c/RackMultipart20250109-23-1nwxfje.png"
+        },
+        "filename": null,
+        "size": 0,
+        "small": {
+          "url": "https://cdn.qontak.com/uploads/user/avatar/bf328531-ffc9-4f93-a7f4-f2f707970e7c/RackMultipart20250109-23-1nwxfje.png"
+        },
+        "medium": {
+          "url": "https://cdn.qontak.com/uploads/user/avatar/bf328531-ffc9-4f93-a7f4-f2f707970e7c/RackMultipart20250109-23-1nwxfje.png"
+        }
+      },
+      "assigned_count": 24,
+      "is_online": false,
+      "robin_last_assigned_at": null,
+      "sso_id": "45af0444-da7a-4650-895d-f752fabb3587",
+      "divisions": [
+        {
+          "id": "8baeadb9-d519-4fc6-b701-8bf0305669b6",
+          "name": "Global Komunika"
+        },
+        {
+          "id": "6fe60c28-e420-478a-96b9-3757f3196021",
+          "name": "General"
+        }
+      ],
+      "extra": {},
+      "is_introduced_smart_assist": false,
+      "limit_ongoing_chat": {
+        "enabled": false,
+        "max": null
+      }
+    }
+  ],
+  "meta": {
+    "pagination": {
+      "cursor": {
+        "next": null
+
+        }
+      }
+    }
+  }
