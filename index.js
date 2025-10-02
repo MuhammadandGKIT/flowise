@@ -114,14 +114,14 @@ app.post("/cek", async (req, res) => {
 // state blok per room
 
 // ====== CONFIG & STATE ======
-const BUFFER_TIMEOUT = 10_000; // 10 detik buffer
-
+const BUFFER_TIMEOUT = 100; // 100ms buffer
 const bufferStore = {};
 const bufferTimers = {};
 
-// ====== HELPERS ======
+// Helper: Bearer token
 const bearer = (t = "") => (/^bearer\s+/i.test(t) ? t : `Bearer ${t}`);
 
+// Helper: Deteksi admin handoff
 function isAdminHandoffSignal(ans) {
   if (!ans) return false;
   const s = String(ans).trim().toLowerCase();
@@ -135,6 +135,7 @@ function isAdminHandoffSignal(ans) {
   return patterns.some((rx) => rx.test(s));
 }
 
+// Helper: Tentukan MIME type file
 function guessMime(url = "") {
   const u = url.toLowerCase();
   if (u.endsWith(".png")) return "image/png";
@@ -143,138 +144,135 @@ function guessMime(url = "") {
   return "image/jpeg";
 }
 
+// Helper: Kirim text ke Qontak
 async function sendQontakText(roomId, text) {
   console.log(`[QONTAK] Room ${roomId} - Pesan bot: ${text}`);
   return axios.post(
     process.env.QONTAK_URL,
     { room_id: roomId, type: "text", text },
-    { headers: { Authorization: bearer(process.env.QONTAK_TOKEN || ""), "Content-Type": "application/json" } }
-  );
-}
-
-async function hasRoomTag(roomId, tag) {
-  try {
-    const resp = await axios.get(
-      `${process.env.QONTAK_BASE_URL}/rooms/${roomId}`,
-      { headers: { Authorization: bearer(process.env.QONTAK_TOKEN || ""), "Content-Type": "application/json" } }
-    );
-    const tags = resp.data?.data?.tags || [];
-    return tags.includes(tag);
-  } catch (err) {
-    console.error("❌ Gagal cek tags room:", err.response?.data || err.message);
-    return false;
-  }
-}
-
-async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
-  try {
-    const form = new FormData();
-    form.append("tag", tag);
-
-    await axios.post(
-      `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/tags`,
-      form,
-      { headers: { Authorization: `Bearer ${process.env.QONTAK_TOKEN}`, ...form.getHeaders() } }
-    );
-    console.log(`✅ Tag '${tag}' berhasil ditambahkan ke room ${roomId}`);
-
-    for (const userId of agentIds) {
-      try {
-        await axios.post(
-          `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/agents/${userId}`,
-          {},
-          {
-            headers: {
-              Accept: "application/json",
-              Authorization: `Bearer ${process.env.QONTAK_TOKEN}`,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-        console.log(`✅ Room ${roomId} berhasil di-assign ke agent ${userId}`);
-      } catch (err) {
-        console.error(`❌ Gagal assign room ${roomId} ke agent ${userId}:`, err.response?.data || err.message);
-      }
+    {
+      headers: {
+        Authorization: bearer(process.env.QONTAK_TOKEN || ""),
+        "Content-Type": "application/json",
+      },
     }
-  } catch (err) {
-    console.error(`❌ Gagal menambah tag '${tag}' untuk room ${roomId}:`, err.response?.data || err.message);
-  }
+  );
 }
 
 // ====== WEBHOOK ======
 app.post("/webhook/qontak", async (req, res) => {
   const { sender_id, text, room, file } = req.body || {};
-  const allowedSenders = (process.env.ALLOWED_SENDER_ID || "").split(",").map(s => s.trim()).filter(Boolean);
-  if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return res.sendStatus(200);
+  const allowedSenders = (process.env.ALLOWED_SENDER_ID || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Hanya proses sender yang diizinkan
+  if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id))
+    return res.sendStatus(200);
 
   const userMessage = text?.trim();
   const fileUrl = file?.url || null;
   const roomId = room?.id || req.body?.room_id;
+
   if (!roomId || !sender_id || (!userMessage && !fileUrl)) return res.sendStatus(200);
 
-  if (await hasRoomTag(roomId, "agent")) return res.sendStatus(200);
+  // Session unik per user (bisa diganti sessionId = sender_id saja jika ingin)
+  const sessionId = sender_id; // session unik per user saja
 
-  // simpan message sementara di memory
-  if (!bufferStore[roomId]) bufferStore[roomId] = [];
-  bufferStore[roomId].push(fileUrl ? { type: "file", url: fileUrl, text: userMessage || "" } : { type: "text", text: userMessage });
 
-  console.log(`[USER] Room ${roomId} - Pesan masuk: ${userMessage || "(file)"}`);
+  // Simpan sementara di buffer
+  if (!bufferStore[sessionId]) bufferStore[sessionId] = [];
+  bufferStore[sessionId].push(
+    fileUrl
+      ? { type: "file", url: fileUrl, text: userMessage || "" }
+      : { type: "text", text: userMessage }
+  );
 
-  if (fileUrl) await sendQontakText(roomId, "📷 Gambar Anda diterima dan sedang dianalisis...");
+  console.log(`[USER] Sender ID ye ${sender_id} - Pesan masuk: ${userMessage || "(file)"}`);
 
-  // reset timer buffer
-  if (bufferTimers[roomId]) clearTimeout(bufferTimers[roomId]);
-  bufferTimers[roomId] = setTimeout(async () => {
-    const messages = bufferStore[roomId] || [];
-    bufferStore[roomId] = [];
-    bufferTimers[roomId] = null;
+  if (fileUrl)
+    await sendQontakText(roomId, "📷 Gambar Anda diterima dan sedang dianalisis...");
 
-    const combinedText = messages.filter(m => m.type === "text").map(m => m.text).join(" ").trim();
-    const files = messages.filter(m => m.type === "file");
+  // Reset timer buffer
+  if (bufferTimers[sessionId]) clearTimeout(bufferTimers[sessionId]);
+  bufferTimers[sessionId] = setTimeout(async () => {
+    const messages = bufferStore[sessionId] || [];
+    bufferStore[sessionId] = [];
+    bufferTimers[sessionId] = null;
+
+    const combinedText = messages
+      .filter((m) => m.type === "text")
+      .map((m) => m.text)
+      .join(" ")
+      .trim();
+
+    const files = messages.filter((m) => m.type === "file");
 
     try {
       let visionSummary = "";
+
+      // Kirim file ke Flowise jika ada
       if (files.length) {
-        const respVision = await axios.post(process.env.CHAT_FLOW_URL, {
-          question: combinedText || "",
-          uploads: files.map((f, i) => ({
-            data: f.url,
-            type: "url",
-            name: `Flowise_${i}${f.url?.toLowerCase().endsWith(".png") ? ".png" : ".jpg"}`,
-            mime: guessMime(f.url),
-          })),
-        }, { headers: { Authorization: bearer(process.env.FLOWISE_API_KEY || ""), "Content-Type": "application/json" } });
+        const respVision = await axios.post(
+          process.env.CHAT_FLOW_URL,
+          {
+            question: combinedText || "",
+            overrideConfig: { sessionId }, // session unik per sender
+            uploads: files.map((f, i) => ({
+              data: f.url,
+              type: "url",
+              name: `Flowise_${i}${
+                f.url?.toLowerCase().endsWith(".png") ? ".png" : ".jpg"
+              }`,
+              mime: guessMime(f.url),
+            })),
+          },
+          {
+            headers: {
+              Authorization: bearer(process.env.FLOWISE_API_KEY || ""),
+              "Content-Type": "application/json",
+            },
+          }
+        );
         visionSummary = respVision.data?.text?.trim() || "";
         console.log(`[FLOWISE] Room ${roomId} - Ringkasan gambar: ${visionSummary}`);
       }
 
-      const question = combinedText + (visionSummary ? `\n[Ringkasan gambar] ${visionSummary}` : "");
-      console.log(`[QUESTION] Room ${roomId}: ${question}`);
+      const question =
+        combinedText + (visionSummary ? `\n[Ringkasan gambar] ${visionSummary}` : "");
 
+      // Kirim text ke Flowise / Agent Flow
       const respAgent = await axios.post(
         process.env.AGENT_FLOW_URL,
-        { question, sessionId: sender_id },
-        { headers: { "Content-Type": "application/json", Authorization: bearer(process.env.AGENT_API_KEY || "") } }
+        {
+          question,
+          overrideConfig: { sessionId }, // session unik per sender
+        },
+        {
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: bearer(process.env.AGENT_API_KEY || ""),
+          },
+        }
       );
 
       const answer = respAgent.data?.text || "";
       console.log(`[AGENT/FLOWISE] Room ${roomId}: ${answer}`);
 
       if (isAdminHandoffSignal(answer)) {
-        await sendQontakText(roomId, "Silakan sampaikan pertanyaan atau pesan Anda, saya akan membantu untuk berkomunikasi dengan admin.");
-        if (!(await hasRoomTag(roomId, "agent"))) {
-          await addRoomTagAndAssign(roomId, "agent", [
-            "da80f6d5-8c0c-4a2a-90f2-48453c88aac0",
-            "471b3f67-1733-4ad3-9f2a-4963d757b00e"
-          ]);
-        }
+        await sendQontakText(
+          roomId,
+          "Silakan sampaikan pertanyaan atau pesan Anda, saya akan bantu teruskan ke admin."
+        );
       } else if (answer) {
         await sendQontakText(roomId, answer);
       }
-
     } catch (err) {
       console.error("❌ Error Flowise/AgentFlow:", err.response?.data || err.message);
-      try { await sendQontakText(roomId, "..").catch(() => {}); } catch {}
+      try {
+        await sendQontakText(roomId, "..").catch(() => {});
+      } catch {}
     }
   }, BUFFER_TIMEOUT);
 
