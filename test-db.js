@@ -10,7 +10,7 @@ const pool = require("./db/connection");
     console.log("🕒 Current time:", res.rows[0]);
 
     client.release();
-    process.exit(0);
+    process.exit(0);S
   } catch (err) {
     console.error("❌ Database connection error:", err.stack);
     process.exit(1);

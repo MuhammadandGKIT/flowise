@@ -114,14 +114,13 @@ app.post("/cek", async (req, res) => {
 // state blok per room
 
 // ====== CONFIG & STATE ======
-const BUFFER_TIMEOUT = 100; // 100ms buffer
+const BUFFER_TIMEOUT = 5_000; // 5 detik buffer
 const bufferStore = {};
 const bufferTimers = {};
 
-// Helper: Bearer token
 const bearer = (t = "") => (/^bearer\s+/i.test(t) ? t : `Bearer ${t}`);
 
-// Helper: Deteksi admin handoff
+// ===== DETEKSI ADMIN HANDOFF =====
 function isAdminHandoffSignal(ans) {
   if (!ans) return false;
   const s = String(ans).trim().toLowerCase();
@@ -135,7 +134,7 @@ function isAdminHandoffSignal(ans) {
   return patterns.some((rx) => rx.test(s));
 }
 
-// Helper: Tentukan MIME type file
+// ===== MIME DETECTOR =====
 function guessMime(url = "") {
   const u = url.toLowerCase();
   if (u.endsWith(".png")) return "image/png";
@@ -144,7 +143,7 @@ function guessMime(url = "") {
   return "image/jpeg";
 }
 
-// Helper: Kirim text ke Qontak
+// ====== QONTAK HELPERS ======
 async function sendQontakText(roomId, text) {
   console.log(`[QONTAK] Room ${roomId} - Pesan bot: ${text}`);
   return axios.post(
@@ -159,15 +158,54 @@ async function sendQontakText(roomId, text) {
   );
 }
 
-// ====== WEBHOOK ======
+async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
+  try {
+    const form = new FormData();
+    form.append("tag", tag);
+
+    await axios.post(
+      `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/tags`,
+      form,
+      {
+        headers: {
+          Authorization: bearer(process.env.QONTAK_TOKEN || ""),
+          ...form.getHeaders(),
+        },
+      }
+    );
+    console.log(`✅ Tag '${tag}' berhasil ditambahkan ke room ${roomId}`);
+
+    for (const userId of agentIds) {
+      try {
+        await axios.post(
+          `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/agents/${userId}`,
+          {},
+          {
+            headers: {
+              Accept: "application/json",
+              Authorization: bearer(process.env.QONTAK_TOKEN || ""),
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        console.log(`✅ Room ${roomId} berhasil di-assign ke agent ${userId}`);
+      } catch (err) {
+        console.error(`❌ Gagal assign ke agent ${userId}:`, err.response?.data || err.message);
+      }
+    }
+  } catch (err) {
+    console.error(`❌ Gagal menambah tag '${tag}':`, err.response?.data || err.message);
+  }
+}
+
+// ====== WEBHOOK HANDLER ======
 app.post("/webhook/qontak", async (req, res) => {
   const { sender_id, text, room, file } = req.body || {};
   const allowedSenders = (process.env.ALLOWED_SENDER_ID || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-
-  // Hanya proses sender yang diizinkan
+//bagian ini hapus jika mau publish
   if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id))
     return res.sendStatus(200);
 
@@ -177,11 +215,9 @@ app.post("/webhook/qontak", async (req, res) => {
 
   if (!roomId || !sender_id || (!userMessage && !fileUrl)) return res.sendStatus(200);
 
-  // Session unik per user (bisa diganti sessionId = sender_id saja jika ingin)
-  const sessionId = sender_id; // session unik per user saja
+  const sessionId = roomId;
 
-
-  // Simpan sementara di buffer
+  // simpan sementara di buffer
   if (!bufferStore[sessionId]) bufferStore[sessionId] = [];
   bufferStore[sessionId].push(
     fileUrl
@@ -189,12 +225,12 @@ app.post("/webhook/qontak", async (req, res) => {
       : { type: "text", text: userMessage }
   );
 
-  console.log(`[USER] Sender ID ye ${sender_id} - Pesan masuk: ${userMessage || "(file)"}`);
+  console.log(`[USER] Sender ID ${sender_id} - Pesan masuk: ${userMessage || "(file)"}`);
 
-  if (fileUrl)
-    await sendQontakText(roomId, "📷 Gambar Anda diterima dan sedang dianalisis...");
+  // if (fileUrl)
+  //   await sendQontakText(roomId, "📷 Gambar Anda diterima dan sedang dianalisis...");
 
-  // Reset timer buffer
+  // reset timer buffer
   if (bufferTimers[sessionId]) clearTimeout(bufferTimers[sessionId]);
   bufferTimers[sessionId] = setTimeout(async () => {
     const messages = bufferStore[sessionId] || [];
@@ -212,13 +248,13 @@ app.post("/webhook/qontak", async (req, res) => {
     try {
       let visionSummary = "";
 
-      // Kirim file ke Flowise jika ada
+      // kirim file ke flowise
       if (files.length) {
         const respVision = await axios.post(
           process.env.CHAT_FLOW_URL,
           {
             question: combinedText || "",
-            overrideConfig: { sessionId }, // session unik per sender
+            overrideConfig: { sessionId },
             uploads: files.map((f, i) => ({
               data: f.url,
               type: "url",
@@ -242,13 +278,9 @@ app.post("/webhook/qontak", async (req, res) => {
       const question =
         combinedText + (visionSummary ? `\n[Ringkasan gambar] ${visionSummary}` : "");
 
-      // Kirim text ke Flowise / Agent Flow
       const respAgent = await axios.post(
         process.env.AGENT_FLOW_URL,
-        {
-          question,
-          overrideConfig: { sessionId }, // session unik per sender
-        },
+        { question, overrideConfig: { sessionId } },
         {
           headers: {
             "Content-Type": "application/json",
@@ -265,20 +297,31 @@ app.post("/webhook/qontak", async (req, res) => {
           roomId,
           "Silakan sampaikan pertanyaan atau pesan Anda, saya akan bantu teruskan ke admin."
         );
+        await addRoomTagAndAssign(roomId, "agent", [
+          "da80f6d5-8c0c-4a2a-90f2-48453c88aac0",
+          "471b3f67-1733-4ad3-9f2a-4963d757b00e",
+        ]);
       } else if (answer) {
         await sendQontakText(roomId, answer);
       }
     } catch (err) {
       console.error("❌ Error Flowise/AgentFlow:", err.response?.data || err.message);
-      try {
-        await sendQontakText(roomId, "..").catch(() => {});
-      } catch {}
+
+      // === AUTO TAG KE ADMIN SAAT ERROR ===
+      await sendQontakText(
+        roomId,
+        "mohon tunggu sebentar!!"
+      );
+
+      await addRoomTagAndAssign(roomId, "agent", [
+        "da80f6d5-8c0c-4a2a-90f2-48453c88aac0",
+        "471b3f67-1733-4ad3-9f2a-4963d757b00e",
+      ]);
     }
   }, BUFFER_TIMEOUT);
 
   res.sendStatus(200);
 });
-
 
 
 
