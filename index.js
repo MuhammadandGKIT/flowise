@@ -199,13 +199,14 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
 }
 
 // ====== WEBHOOK HANDLER ======
+// ====== WEBHOOK HANDLER ======
 app.post("/webhook/qontak", async (req, res) => {
   const { sender_id, text, room, file } = req.body || {};
   const allowedSenders = (process.env.ALLOWED_SENDER_ID || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-//bagian ini hapus jika mau publish
+
   if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id))
     return res.sendStatus(200);
 
@@ -217,6 +218,18 @@ app.post("/webhook/qontak", async (req, res) => {
 
   const sessionId = roomId;
 
+  // ==== CEK ROOM TAG AGENT TERLEBIH DAHULU ====
+  let isAgentTagged = false;
+  try {
+    const { data: tags } = await axios.get(
+      `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/tags`,
+      { headers: { Authorization: bearer(process.env.QONTAK_TOKEN || "") } }
+    );
+    if (Array.isArray(tags) && tags.includes("agent")) isAgentTagged = true;
+  } catch (err) {
+    console.error(`❌ Gagal cek tag room ${roomId}:`, err.response?.data || err.message);
+  }
+
   // simpan sementara di buffer
   if (!bufferStore[sessionId]) bufferStore[sessionId] = [];
   bufferStore[sessionId].push(
@@ -225,10 +238,7 @@ app.post("/webhook/qontak", async (req, res) => {
       : { type: "text", text: userMessage }
   );
 
-  console.log(`[USER] Sender ID ${sender_id} - Pesan masuk: ${userMessage || "(file)"}`);
-
-  // if (fileUrl)
-  //   await sendQontakText(roomId, "📷 Gambar Anda diterima dan sedang dianalisis...");
+  console.log(`[USER] Sender ID ${sender_id} - Pesan masuk: ${userMessage || "(file)"} (agentTagged=${isAgentTagged})`);
 
   // reset timer buffer
   if (bufferTimers[sessionId]) clearTimeout(bufferTimers[sessionId]);
@@ -245,16 +255,13 @@ app.post("/webhook/qontak", async (req, res) => {
 
     const files = messages.filter((m) => m.type === "file");
     console.log(`💬 [BUFFER] Text gabungan (${sessionId}): "${combinedText}"`);
-    if (files.length) {
-      console.log(`🖼️ [BUFFER] Ada ${files.length} file di buffer:`, files.map((f) => f.url));
-    }
-
+    if (files.length) console.log(`🖼️ [BUFFER] Ada ${files.length} file di buffer:`, files.map((f) => f.url));
 
     try {
       let visionSummary = "";
 
-      // kirim file ke flowise
-      if (files.length) {
+      // === KIRIM KE FLOWISE HANYA JIKA ROOM BELUM DITAG AGENT ===
+      if (!isAgentTagged && files.length) {
         const respVision = await axios.post(
           process.env.CHAT_FLOW_URL,
           {
@@ -263,9 +270,7 @@ app.post("/webhook/qontak", async (req, res) => {
             uploads: files.map((f, i) => ({
               data: f.url,
               type: "url",
-              name: `Flowise_${i}${
-                f.url?.toLowerCase().endsWith(".png") ? ".png" : ".jpg"
-              }`,
+              name: `Flowise_${i}${f.url?.toLowerCase().endsWith(".png") ? ".png" : ".jpg"}`,
               mime: guessMime(f.url),
             })),
           },
@@ -280,9 +285,9 @@ app.post("/webhook/qontak", async (req, res) => {
         console.log(`[FLOWISE] Room ${roomId} - Ringkasan gambar: ${visionSummary}`);
       }
 
-      const question =
-        combinedText + (visionSummary ? `\n[Ringkasan gambar] ${visionSummary}` : "");
+      const question = combinedText + (visionSummary ? `\n[Ringkasan gambar] ${visionSummary}` : "");
 
+      // Kirim ke AgentFlow selalu, baik room ada tag agent atau tidak
       const respAgent = await axios.post(
         process.env.AGENT_FLOW_URL,
         { question, overrideConfig: { sessionId } },
@@ -306,18 +311,14 @@ app.post("/webhook/qontak", async (req, res) => {
           "da80f6d5-8c0c-4a2a-90f2-48453c88aac0",
           "471b3f67-1733-4ad3-9f2a-4963d757b00e",
         ]);
-      } else if (answer) {
+      } else if (answer && !isAgentTagged) {
+        // Hanya balas dari Flowise/AgentFlow jika room belum tag agent
         await sendQontakText(roomId, answer);
       }
     } catch (err) {
       console.error("❌ Error Flowise/AgentFlow:", err.response?.data || err.message);
 
-      // === AUTO TAG KE ADMIN SAAT ERROR ===
-      await sendQontakText(
-        roomId,
-        "mohon tunggu sebentar!!"
-      );
-
+      await sendQontakText(roomId, "mohon tunggu sebentar!!");
       await addRoomTagAndAssign(roomId, "agent", [
         "da80f6d5-8c0c-4a2a-90f2-48453c88aac0",
         "471b3f67-1733-4ad3-9f2a-4963d757b00e",
@@ -327,6 +328,7 @@ app.post("/webhook/qontak", async (req, res) => {
 
   res.sendStatus(200);
 });
+
 
 
 
