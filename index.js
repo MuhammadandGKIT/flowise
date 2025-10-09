@@ -114,7 +114,7 @@ app.post("/cek", async (req, res) => {
 // state blok per room
 
 // ====== CONFIG & STATE ======
-const BUFFER_TIMEOUT = 5_000; // 5 detik buffer
+const BUFFER_TIMEOUT = 3_000; // 5 detik buffer
 const bufferStore = {};
 const bufferTimers = {};
 
@@ -244,6 +244,11 @@ app.post("/webhook/qontak", async (req, res) => {
       .trim();
 
     const files = messages.filter((m) => m.type === "file");
+    console.log(`💬 [BUFFER] Text gabungan (${sessionId}): "${combinedText}"`);
+    if (files.length) {
+      console.log(`🖼️ [BUFFER] Ada ${files.length} file di buffer:`, files.map((f) => f.url));
+    }
+
 
     try {
       let visionSummary = "";
