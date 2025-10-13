@@ -496,39 +496,65 @@ app.get("/sync-products", async (req, res) => {
 app.get("/products", async (req, res) => {
   try {
     // ===============================
-    // 1️⃣ Cek API Key
+    // 1️⃣ Ambil query parameter
     // ===============================
-    // const apiKey = req.headers["x-api-key"]; // client harus kirim header 'x-api-key'
-    // if (!apiKey || apiKey !== process.env.PRODUCTS_API_KEY) {
-    //   return res.status(401).json({
-    //     status: "error",
-    //     message: "Unauthorized. API Key invalid atau tidak diberikan.",
-    //   });
-    // }
+    const search = req.query.search || "";   // untuk cari nama/deskripsi
+    const country = req.query.country || ""; // untuk filter negara
+    const name = req.query.name || "";       // untuk filter nama produk
 
     // ===============================
-    // 2️⃣ Ambil query parameter 'search'
+    // 2️⃣ Siapkan query dinamis
     // ===============================
-    const search = req.query.search || "";
-
-    // ===============================
-    // 3️⃣ Query database (flexible search)
-    // ===============================
-    const queryText = `
+    let queryText = `
       SELECT 
-        nama_produk, 
-        supplier, 
-        deskripsi_produk, 
-        coverage_negara, 
+        id,
+        nama_produk,
+        supplier,
+        deskripsi_produk,
+        coverage_negara,
         tautan_web
       FROM products
-      WHERE 
-        nama_produk ILIKE $1 OR
-        deskripsi_produk ILIKE $1 OR
-        coverage_negara ILIKE $1
-      ORDER BY nama_produk ASC
+      WHERE 1=1
     `;
-    const { rows } = await pool.query(queryText, [`%${search}%`]);
+
+    const queryParams = [];
+
+    // Jika ada parameter "search"
+    if (search) {
+      queryParams.push(`%${search}%`);
+      queryText += `
+        AND (
+          nama_produk ILIKE $${queryParams.length} OR
+          deskripsi_produk ILIKE $${queryParams.length} OR
+          supplier ILIKE $${queryParams.length} OR
+          coverage_negara ILIKE $${queryParams.length}
+        )
+      `;
+    }
+
+    // Jika ada parameter "country"
+    if (country) {
+      queryParams.push(`%${country}%`);
+      queryText += `
+        AND coverage_negara ILIKE $${queryParams.length}
+      `;
+    }
+
+    // Jika ada parameter "name"
+    if (name) {
+      queryParams.push(`%${name}%`);
+      queryText += `
+        AND nama_produk ILIKE $${queryParams.length}
+      `;
+    }
+
+    // Urutkan hasil biar rapi
+    queryText += ` ORDER BY nama_produk ASC`;
+
+    // ===============================
+    // 3️⃣ Eksekusi query
+    // ===============================
+    const { rows } = await pool.query(queryText, queryParams);
 
     // ===============================
     // 4️⃣ Response sukses
@@ -536,12 +562,16 @@ app.get("/products", async (req, res) => {
     res.json({
       status: "success",
       total: rows.length,
-      data: rows,
+      data: rows.map(row => ({
+        nama_produk: row.nama_produk,
+        supplier: row.supplier,
+        deskripsi_produk: row.deskripsi_produk,
+        coverage_negara: row.coverage_negara,
+        tautan_web: row.tautan_web
+      })),
     });
+
   } catch (err) {
-    // ===============================
-    // Error handling
-    // ===============================
     console.error("❌ Error mengambil data produk:", err);
     res.status(500).json({ status: "error", message: err.message });
   }
