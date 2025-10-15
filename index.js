@@ -496,11 +496,9 @@ app.get("/sync-products", async (req, res) => {
 app.get("/products", async (req, res) => {
   try {
     // ===============================
-    // 1️⃣ Ambil query parameter
+    // 1️⃣ Ambil query parameter search saja
     // ===============================
-    const search = req.query.search || "";   // untuk cari nama/deskripsi
-    const country = req.query.country || ""; // untuk filter negara
-    const name = req.query.name || "";       // untuk filter nama produk
+    const search = req.query.search || "";
 
     // ===============================
     // 2️⃣ Siapkan query dinamis
@@ -519,36 +517,25 @@ app.get("/products", async (req, res) => {
 
     const queryParams = [];
 
-    // Jika ada parameter "search"
+    // Jika ada search
     if (search) {
-      queryParams.push(`%${search}%`);
-      queryText += `
-        AND (
-          nama_produk ILIKE $${queryParams.length} OR
-          deskripsi_produk ILIKE $${queryParams.length} OR
-          supplier ILIKE $${queryParams.length} OR
-          coverage_negara ILIKE $${queryParams.length}
-        )
-      `;
+      // Split search menjadi beberapa kata untuk fleksibilitas multi-keyword
+      const keywords = search.trim().split(/\s+/);
+      const searchClauses = keywords.map((_, i) => {
+        const idx = queryParams.length + 1;
+        queryParams.push(`%${keywords[i]}%`);
+        return `
+          nama_produk ILIKE $${idx} OR
+          deskripsi_produk ILIKE $${idx} OR
+          supplier ILIKE $${idx} OR
+          coverage_negara ILIKE $${idx}
+        `;
+      });
+
+      queryText += ` AND (${searchClauses.join(" OR ")})`;
     }
 
-    // Jika ada parameter "country"
-    if (country) {
-      queryParams.push(`%${country}%`);
-      queryText += `
-        AND coverage_negara ILIKE $${queryParams.length}
-      `;
-    }
-
-    // Jika ada parameter "name"
-    if (name) {
-      queryParams.push(`%${name}%`);
-      queryText += `
-        AND nama_produk ILIKE $${queryParams.length}
-      `;
-    }
-
-    // Urutkan hasil biar rapi
+    // Urutkan hasil
     queryText += ` ORDER BY nama_produk ASC`;
 
     // ===============================
@@ -576,6 +563,7 @@ app.get("/products", async (req, res) => {
     res.status(500).json({ status: "error", message: err.message });
   }
 });
+
 
 
 
