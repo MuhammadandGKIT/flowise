@@ -232,8 +232,8 @@ app.post("/webhook/qontak", async (req, res) => {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id))
-    return res.sendStatus(200);
+  // if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id))
+  //   return res.sendStatus(200);
 
   const userMessage = text?.trim();
   const fileUrl = file?.url || null;
