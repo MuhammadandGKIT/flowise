@@ -1,13 +1,15 @@
+// ===== IMPORT =====
 const express = require("express");
-
 const Papa = require("papaparse");
 const axios = require("axios");
-require("dotenv").config();
-const pool = require("./db/connection");
-const app = express();
 const fetch = require("node-fetch");
 const fs = require("fs");
 const path = require("path");
+const FormData = require("form-data");
+require("dotenv").config();
+
+// ===== CONFIG ENV =====
+const PORT = process.env.PORT || 3001;
 const GAS_URL = process.env.GAS_URL;
 const TARGET_ROOM = process.env.TARGET_ROOM;
 const FLOWISE_URL = process.env.FLOWISE_URL;
@@ -16,12 +18,20 @@ const QONTAK_URL = process.env.QONTAK_URL;
 const BOT_ID = process.env.BOT_ID;
 const TARGET_SENDER = process.env.TARGET_SENDER;
 const TARGET_ACCOUNT = process.env.TARGET_ACCOUNT;
-const PORT = process.env.PORT || 3001;
+
+// ===== DATABASE =====
+const pool = require("./db/connection");
+
+// ===== EXPRESS APP =====
+const app = express();
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
-const client = require("./redisClient");
-const FormData = require("form-data");
 
+// ===== REDIS & QUEUE =====
+const { Queue, Worker } = require("bullmq");
+const redis = require("./redisClient");
+
+// const chatQueue = new Queue("chatQueue", { connection: client });
 
 /**
  * @route POST /cek
@@ -113,15 +123,176 @@ app.post("/cek", async (req, res) => {
 // Simpan state blok per room
 // state blok per room
 
-// ====== CONFIG & STATE ======
-const BUFFER_TIMEOUT = 3_000; // 3 detik buffer
-const bufferStore = {};
+// ===== QUEUE BULLMQ =====
+// ====== CONSTANT ======
+const BUFFER_TIMEOUT = 5_000; // 5 detik
+const MESSAGE_DEDUP_TTL = 90; // 90 detik untuk dedup (lebih lama)
+const PROCESSING_LOCK_TTL = 45; // 45 detik untuk lock processing
+const RATE_LIMIT_WINDOW = 60; // 1 menit
+const MAX_REQUESTS_PER_MINUTE = 3; // Max 3 request per menit per room
+const RESPONSE_CACHE_TTL = 120; // Cache response 2 menit untuk cegah loop
+
 const bufferTimers = {};
-const agentTaggedRooms = new Set(); // simpan room yg sudah ditag agent
+const roomTagCache = new Map();
+const processingRooms = new Set();
+const lastBotResponses = new Map(); // Cache last response per room
 
 const bearer = (t = "") => (/^bearer\s+/i.test(t) ? t : `Bearer ${t}`);
 
-// ===== DETEKSI ADMIN HANDOFF =====
+// ========== BOT RESPONSE DETECTOR ==========
+function isBotResponse(text, roomId) {
+  if (!text) return false;
+  
+  // Cek apakah text ini adalah response bot yang baru dikirim
+  const lastResponse = lastBotResponses.get(roomId);
+  if (lastResponse) {
+    const { text: lastText, time } = lastResponse;
+    const timeDiff = Date.now() - time;
+    
+    // Jika text PERSIS SAMA dan dalam 2 menit terakhir, ini bot echo
+    if (text === lastText && timeDiff < RESPONSE_CACHE_TTL * 1000) {
+      return true;
+    }
+    
+    // Cek similarity tinggi (90%+ sama) dan baru saja dikirim (dalam 30 detik)
+    if (timeDiff < 30000) {
+      const similarity = calculateSimilarity(text, lastText);
+      if (similarity > 0.9) {
+        return true;
+      }
+    }
+  }
+  
+  // HANYA cek pattern yang SANGAT spesifik untuk bot response
+  const strictBotPatterns = [
+    /^📷\s*(sedang\s*)?(menganalisis|analisis)\s*gambar/i, // "📷 Menganalisis gambar..."
+    /^⏳\s*terlalu\s*banyak\s*permintaan/i, // "⏳ Terlalu banyak permintaan..."
+    /^baik,?\s*saya\s*hubungkan\s*dengan\s*admin/i, // "Baik, saya hubungkan dengan admin"
+    /^mohon\s*maaf,?\s*saya\s*hubungkan\s*dengan\s*tim/i, // "Mohon maaf, saya hubungkan dengan tim"
+    /^terjadi\s*kendala.*kami\s*hubungkan/i, // "Terjadi kendala. Kami hubungkan..."
+  ];
+  
+  return strictBotPatterns.some(pattern => pattern.test(text.trim()));
+}
+
+function calculateSimilarity(str1, str2) {
+  const len1 = str1.length;
+  const len2 = str2.length;
+  const maxLen = Math.max(len1, len2);
+  if (maxLen === 0) return 1.0;
+  
+  const minLen = Math.min(len1, len2);
+  const commonStart = str1.substring(0, minLen) === str2.substring(0, minLen) 
+    ? minLen 
+    : 0;
+  
+  return commonStart / maxLen;
+}
+
+// ========== RATE LIMITER ==========
+async function checkRateLimit(roomId) {
+  const key = `ratelimit:${roomId}`;
+  const count = await redis.incr(key);
+  
+  if (count === 1) {
+    await redis.expire(key, RATE_LIMIT_WINDOW);
+  }
+  
+  if (count > MAX_REQUESTS_PER_MINUTE) {
+    console.log(`🚫 Rate limit: room ${roomId} (${count}/${MAX_REQUESTS_PER_MINUTE})`);
+    return false;
+  }
+  
+  return true;
+}
+
+// ========== PROCESSING LOCK ==========
+async function acquireProcessingLock(roomId) {
+  // In-memory check first (fastest)
+  if (processingRooms.has(roomId)) {
+    return false;
+  }
+  
+  // Redis lock with NX (set if not exists)
+  const lockKey = `processing:${roomId}`;
+  const acquired = await redis.set(lockKey, Date.now().toString(), "EX", PROCESSING_LOCK_TTL, "NX");
+  
+  if (!acquired) {
+    return false;
+  }
+  
+  processingRooms.add(roomId);
+  return true;
+}
+
+async function releaseProcessingLock(roomId) {
+  processingRooms.delete(roomId);
+  await redis.del(`processing:${roomId}`);
+}
+
+// ========== BUFFER REDIS ==========
+async function addToBuffer(roomId, message) {
+  const key = `buffer:${roomId}`;
+  const old = JSON.parse((await redis.get(key)) || "[]");
+  old.push(message);
+  
+  // Batasi buffer max 5 pesan (kurangi dari 10)
+  if (old.length > 5) old.shift();
+  
+  await redis.set(key, JSON.stringify(old), "EX", 15);
+}
+
+async function flushBuffer(roomId) {
+  const key = `buffer:${roomId}`;
+  const messages = JSON.parse((await redis.get(key)) || "[]");
+  await redis.del(key);
+  return messages;
+}
+
+// ========== ANTI DUPLIKAT (ULTRA KETAT) ==========
+async function isDuplicate(roomId, messageId, text, senderId) {
+  if (!roomId) return false;
+  
+  // Buat primary key yang PASTI unik
+  let primaryKey = null;
+  
+  // Priority 1: Message ID (paling reliable)
+  if (messageId) {
+    primaryKey = `dedup:${roomId}:${messageId}`;
+  } 
+  // Priority 2: Sender + text hash (jika tidak ada messageId)
+  else if (senderId && text) {
+    const hash = require('crypto')
+      .createHash('md5')
+      .update(`${senderId}:${text}`)
+      .digest('hex')
+      .slice(0, 12);
+    primaryKey = `dedup:${roomId}:${hash}`;
+  }
+  // Priority 3: Text only hash
+  else if (text) {
+    const hash = require('crypto')
+      .createHash('md5')
+      .update(text)
+      .digest('hex')
+      .slice(0, 12);
+    primaryKey = `dedup:${roomId}:txt:${hash}`;
+  }
+  
+  if (!primaryKey) return false;
+  
+  // Single atomic check-and-set dengan Redis
+  const result = await redis.set(primaryKey, "1", "EX", MESSAGE_DEDUP_TTL, "NX");
+  
+  // Jika result null, berarti key sudah exist = duplikat
+  if (!result) {
+    return true; // Duplikat, skip tanpa log
+  }
+  
+  return false;
+}
+
+// ========== DETEKSI ADMIN HANDOFF ==========
 function isAdminHandoffSignal(ans) {
   if (!ans) return false;
   const s = String(ans).trim().toLowerCase();
@@ -131,37 +302,60 @@ function isAdminHandoffSignal(ans) {
     /^handoff$/,
     /^route_to_admin$/,
     /#\s*handoff\b/,
+    /hubungi.*admin/i,
+    /butuh.*bantuan.*manusia/i,
   ];
   return patterns.some((rx) => rx.test(s));
 }
 
-// ===== MIME DETECTOR =====
+// ========== MIME DETECTOR ==========
 function guessMime(url = "") {
   const u = url.toLowerCase();
   if (u.endsWith(".png")) return "image/png";
   if (u.endsWith(".webp")) return "image/webp";
   if (u.endsWith(".gif")) return "image/gif";
+  if (u.endsWith(".jpg") || u.endsWith(".jpeg")) return "image/jpeg";
   return "image/jpeg";
 }
 
-// ====== QONTAK HELPERS ======
+// ========== QONTAK HELPERS ==========
 async function sendQontakText(roomId, text) {
-  console.log(`[QONTAK] Room ${roomId} - Pesan bot: ${text}`);
-  return axios.post(
-    process.env.QONTAK_URL,
-    { room_id: roomId, type: "text", text },
-    {
-      headers: {
-        Authorization: bearer(process.env.QONTAK_TOKEN || ""),
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  if (!text || !roomId) return;
+  
+  // Cache response untuk deteksi loop
+  lastBotResponses.set(roomId, { text, time: Date.now() });
+  
+  // Cleanup old cache (keep only last 50 rooms)
+  if (lastBotResponses.size > 50) {
+    const firstKey = lastBotResponses.keys().next().value;
+    lastBotResponses.delete(firstKey);
+  }
+  
+  console.log(`📤 Room ${roomId.slice(-8)}`);
+  
+  try {
+    return await axios.post(
+      process.env.QONTAK_URL,
+      { room_id: roomId, type: "text", text },
+      {
+        headers: {
+          Authorization: bearer(process.env.QONTAK_TOKEN || ""),
+          "Content-Type": "application/json",
+        },
+        timeout: 10000,
+      }
+    );
+  } catch (err) {
+    console.error(`❌ Kirim gagal ${roomId.slice(-8)}: ${err.message}`);
+    throw err;
+  }
 }
 
 async function hasRoomTag(roomId, tag) {
-  // cek cache dulu
-  if (agentTaggedRooms.has(roomId) && tag === "agent") return true;
+  const cached = roomTagCache.get(roomId);
+  if (cached && Date.now() - cached.time < 30_000) {
+    return cached.tags.includes(tag);
+  }
 
   try {
     const resp = await axios.get(
@@ -171,14 +365,15 @@ async function hasRoomTag(roomId, tag) {
           Authorization: bearer(process.env.QONTAK_TOKEN || ""),
           "Content-Type": "application/json",
         },
+        timeout: 5000,
       }
     );
+    
     const tags = resp.data?.data?.tags || [];
-    const hasTag = tags.includes(tag);
-    if (hasTag && tag === "agent") agentTaggedRooms.add(roomId);
-    return hasTag;
+    roomTagCache.set(roomId, { tags, time: Date.now() });
+    return tags.includes(tag);
   } catch (err) {
-    console.error("❌ Gagal cek tags room:", err.response?.data || err.message);
+    console.error(`❌ Cek tag gagal: ${err.message}`);
     return false;
   }
 }
@@ -187,7 +382,7 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
   try {
     const form = new FormData();
     form.append("tag", tag);
-
+    
     await axios.post(
       `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/tags`,
       form,
@@ -196,102 +391,84 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
           Authorization: bearer(process.env.QONTAK_TOKEN || ""),
           ...form.getHeaders(),
         },
+        timeout: 5000,
       }
     );
-    console.log(`✅ Tag '${tag}' berhasil ditambahkan ke room ${roomId}`);
-    if (tag === "agent") agentTaggedRooms.add(roomId);
+    
+    console.log(`✅ Tag '${tag}' → room ${roomId.slice(-8)}`);
 
-    for (const userId of agentIds) {
-      try {
-        await axios.post(
-          `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/agents/${userId}`,
-          {},
-          {
-            headers: {
-              Accept: "application/json",
-              Authorization: bearer(process.env.QONTAK_TOKEN || ""),
-              "Content-Type": "application/json",
-            },
-          }
-        );
-        console.log(`✅ Room ${roomId} berhasil di-assign ke agent ${userId}`);
-      } catch (err) {
-        console.error(`❌ Gagal assign ke agent ${userId}:`, err.response?.data || err.message);
-      }
-    }
+    const assignPromises = agentIds.map((userId) =>
+      axios.post(
+        `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/agents/${userId}`,
+        {},
+        {
+          headers: {
+            Accept: "application/json",
+            Authorization: bearer(process.env.QONTAK_TOKEN || ""),
+            "Content-Type": "application/json",
+          },
+          timeout: 5000,
+        }
+      ).catch((err) => {
+        console.error(`❌ Assign agent gagal: ${err.message}`);
+      })
+    );
+    
+    await Promise.allSettled(assignPromises);
   } catch (err) {
-    console.error(`❌ Gagal menambah tag '${tag}':`, err.response?.data || err.message);
+    console.error(`❌ Tag gagal: ${err.message}`);
   }
 }
 
-// ====== WEBHOOK HANDLER ======
-app.post("/webhook/qontak", async (req, res) => {
-  const { sender_id, text, room, file } = req.body || {};
-  const allowedSenders = (process.env.ALLOWED_SENDER_ID || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  // if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id))
-  //   return res.sendStatus(200);
-
-  const userMessage = text?.trim();
-  const fileUrl = file?.url || null;
-  const roomId = room?.id || req.body?.room_id;
-
-  if (!roomId || !sender_id || (!userMessage && !fileUrl)) return res.sendStatus(200);
-
-  // ===== SKIP JIKA SUDAH ADA TAG "AGENT" =====
-  if (await hasRoomTag(roomId, "agent")) {
-    console.log(`🚫 Room ${roomId} sudah ada tag 'agent', chat tidak diteruskan`);
-    return res.sendStatus(200);
+// ========== PROCESS MESSAGES (CORE LOGIC) ==========
+async function processMessages(roomId, agentSenders) {
+  // Acquire lock
+  if (!(await acquireProcessingLock(roomId))) {
+    return; // Silent skip
   }
 
-  const sessionId = roomId;
+  try {
+    // Check rate limit
+    if (!(await checkRateLimit(roomId))) {
+      await sendQontakText(
+        roomId,
+        "Mohon tunggu sebentar ya kak :)"
+      );
+      return;
+    }
 
-  // simpan sementara di buffer
-  if (!bufferStore[sessionId]) bufferStore[sessionId] = [];
-  bufferStore[sessionId].push(
-    fileUrl
-      ? { type: "file", url: fileUrl, text: userMessage || "" }
-      : { type: "text", text: userMessage }
-  );
-
-  console.log(`[USER] Sender ID ${sender_id} - Pesan masuk: ${userMessage || "(file)"}`);
-
-  // reset timer buffer
-  if (bufferTimers[sessionId]) clearTimeout(bufferTimers[sessionId]);
-  bufferTimers[sessionId] = setTimeout(async () => {
-    const messages = bufferStore[sessionId] || [];
-    bufferStore[sessionId] = [];
-    bufferTimers[sessionId] = null;
+    const messages = await flushBuffer(roomId);
+    if (!messages.length) {
+      return;
+    }
 
     const combinedText = messages
       .filter((m) => m.type === "text")
       .map((m) => m.text)
       .join(" ")
       .trim();
-
+      
     const files = messages.filter((m) => m.type === "file");
-    console.log(`💬 [BUFFER] Text gabungan (${sessionId}): "${combinedText}"`);
-    if (files.length) {
-      console.log(`🖼️ [BUFFER] Ada ${files.length} file di buffer:`, files.map((f) => f.url));
-    }
 
-    try {
-      let visionSummary = "";
+    console.log(`🔄 Process ${roomId.slice(-8)}: ${files.length} files`);
 
-      // kirim file ke flowise
-      if (files.length) {
+    let answer = "";
+    let visionSummary = "";
+
+    // Vision flow untuk gambar
+    if (files.length > 0) {
+      try {
+        await sendQontakText(roomId, "Menganalisis gambar...");
+        
         const respVision = await axios.post(
           process.env.CHAT_FLOW_URL,
           {
-            question: combinedText || "",
-            overrideConfig: { sessionId },
+            question: combinedText || "Jelaskan gambar ini",
+            overrideConfig: { sessionId: roomId },
             uploads: files.map((f, i) => ({
               data: f.url,
               type: "url",
-              name: `Flowise_${i}${f.url?.toLowerCase().endsWith(".png") ? ".png" : ".jpg"}`,
+              name: `img_${i}${f.url?.toLowerCase().endsWith(".png") ? ".png" : ".jpg"}`,
               mime: guessMime(f.url),
             })),
           },
@@ -300,58 +477,156 @@ app.post("/webhook/qontak", async (req, res) => {
               Authorization: bearer(process.env.FLOWISE_API_KEY || ""),
               "Content-Type": "application/json",
             },
+            timeout: 30000,
           }
         );
+        
         visionSummary = respVision.data?.text?.trim() || "";
-        console.log(`[FLOWISE] Room ${roomId} - Ringkasan gambar: ${visionSummary}`);
+      } catch (err) {
+        console.error(`❌ Vision error: ${err.message}`);
+        visionSummary = "[Gagal analisis gambar]";
       }
-
-      const question =
-        combinedText + (visionSummary ? `\n[Ringkasan gambar] ${visionSummary}` : "");
-
-      const respAgent = await axios.post(
-        process.env.AGENT_FLOW_URL,
-        { question, overrideConfig: { sessionId } },
-        {
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: bearer(process.env.AGENT_API_KEY || ""),
-          },
-        }
-      );
-
-      const answer = respAgent.data?.text || "";
-      console.log(`[AGENT/FLOWISE] Room ${roomId}: ${answer}`);
-
-      if (isAdminHandoffSignal(answer)) {
-        await sendQontakText(
-          roomId,
-          "Silakan sampaikan pertanyaan atau pesan Anda, saya akan bantu teruskan ke admin."
-        );
-        await addRoomTagAndAssign(roomId, "agent", [
-          "da80f6d5-8c0c-4a2a-90f2-48453c88aac0",
-          "471b3f67-1733-4ad3-9f2a-4963d757b00e",
-        ]);
-      } else if (answer) {
-        await sendQontakText(roomId, answer);
-      }
-    } catch (err) {
-      console.error("❌ Error Flowise/AgentFlow:", err.response?.data || err.message);
-      await sendQontakText(roomId, "mohon tunggu sebentar!!");
-      await addRoomTagAndAssign(roomId, "agent", [
-        "da80f6d5-8c0c-4a2a-90f2-48453c88aac0",
-        "471b3f67-1733-4ad3-9f2a-4963d757b00e",
-      ]);
     }
-  }, BUFFER_TIMEOUT);
 
+    // Agent flow
+    const finalQuestion = visionSummary
+      ? `${combinedText}\n\n[Analisis gambar]: ${visionSummary}`
+      : combinedText || "(User tidak mengirim teks)";
+
+    let retries = 2;
+    while (retries > 0) {
+      try {
+        const respAgent = await axios.post(
+          process.env.AGENT_FLOW_URL,
+          {
+            question: finalQuestion,
+            overrideConfig: { sessionId: roomId },
+          },
+          {
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: bearer(process.env.AGENT_API_KEY || ""),
+            },
+            timeout: 30000,
+          }
+        );
+
+        answer = respAgent.data?.text || "";
+        console.log(`✅ Agent OK ${roomId.slice(-8)}`);
+        break;
+      } catch (err) {
+        retries--;
+        
+        if (err.response?.status === 429 && retries > 0) {
+          console.error(`⏳ Rate limit, retry...`);
+          await new Promise((r) => setTimeout(r, 3000));
+        } else {
+          console.error(`❌ Agent error: ${err.message}`);
+          break;
+        }
+      }
+    }
+
+    // Handle response
+    if (isAdminHandoffSignal(answer)) {
+      await sendQontakText(
+        roomId,
+        "Baik, saya hubungkan dengan admin. Mohon tunggu."
+      );
+      await addRoomTagAndAssign(roomId, "botassign", agentSenders);
+    } else if (answer) {
+      await sendQontakText(roomId, answer);
+    } else {
+      await sendQontakText(
+        roomId,
+        "mohon ditunggu, kami memerlukan pengecekan lebih lanjut"
+      );
+      await addRoomTagAndAssign(roomId, "botassign", agentSenders);
+    }
+  } catch (err) {
+    console.error(`❌ Fatal error ${roomId.slice(-8)}: ${err.message}`);
+    
+    try {
+      await sendQontakText(
+        roomId,
+        "Mmohon ditunggu, kami memerlukan pengecekan lebih lanjut"
+      );
+      await addRoomTagAndAssign(roomId, "botassign", agentSenders);
+    } catch (sendErr) {
+      console.error(`❌ Send error gagal: ${sendErr.message}`);
+    }
+  } finally {
+    await releaseProcessingLock(roomId);
+  }
+}
+
+// ========== WEBHOOK HANDLER ==========
+app.post("/webhook/qontak", async (req, res) => {
+  const { sender_id, text, room, file, message_id } = req.body || {};
+  const channelIntegrationId = req.body.channel_integration_id || room?.channel_integration_id;
+  const roomId = room?.id || req.body?.room_id;
+  const userMessage = text?.trim();
+
+  // Response 200 langsung
   res.sendStatus(200);
+
+  // Validasi basic
+  if (!roomId) return;
+
+  // ========== DUPLICATE CHECK PALING AWAL (CRITICAL!) ==========
+  // Ini HARUS di atas semua filter untuk stop webhook spam
+  if (await isDuplicate(roomId, message_id, userMessage, sender_id)) {
+    return; // Silent skip, NO LOG untuk hemat resource
+  }
+
+  // ========== AGENT SENDERS (SKIP) ==========
+  const agentSenders = [
+    "da80f6d5-8c0c-4a2a-90f2-48453c88aac0",
+    "471b3f67-1733-4ad3-9f2a-4963d757b00e",
+  ];
+
+  if (agentSenders.includes(sender_id)) return;
+
+  // ========== BOT RESPONSE DETECTION ==========
+  if (userMessage && isBotResponse(userMessage, roomId)) {
+    return; // Silent skip, NO LOG
+  }
+
+  // ========== ALLOWED SENDERS ==========
+  const allowedSenders = (process.env.ALLOWED_SENDER_ID || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
+
+  // ========== ALLOWED CHANNELS ==========
+  const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
+  if (!allowedChannels.includes(channelIntegrationId)) return;
+
+  // ✅ Jika sampai sini, berarti valid message
+  console.log(`📥 ${roomId.slice(-8)}: ${userMessage?.slice(0, 40) || "(file)"}...`);
+
+  // ========== BUFFER MESSAGES ==========
+  await addToBuffer(
+    roomId,
+    file?.url
+      ? { type: "file", url: file.url, text: userMessage || "" }
+      : { type: "text", text: userMessage }
+  );
+
+  // ========== DEBOUNCE TIMER ==========
+  if (bufferTimers[roomId]) {
+    clearTimeout(bufferTimers[roomId]);
+  }
+
+  bufferTimers[roomId] = setTimeout(() => {
+    delete bufferTimers[roomId];
+    processMessages(roomId, agentSenders).catch((err) => {
+      console.error(`❌ Process error: ${err.message}`);
+    });
+  }, BUFFER_TIMEOUT);
 });
-
-
-
-
-
 
 
 
