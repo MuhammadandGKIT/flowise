@@ -125,7 +125,7 @@ app.post("/cek", async (req, res) => {
 
 // ===== QUEUE BULLMQ =====
 // ====== CONSTANT ======
-//codingan yang sudah bagus
+//codingan siap lauching
 const BUFFER_TIMEOUT = 5_000; // 5 detik
 const MESSAGE_DEDUP_TTL = 90; // 90 detik untuk dedup
 const PROCESSING_LOCK_TTL = 45; // 45 detik untuk lock processing
