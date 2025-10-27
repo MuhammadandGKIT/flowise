@@ -134,7 +134,7 @@ const MAX_REQUESTS_PER_MINUTE = 5; // Max 5 request per menit per room
 const RESPONSE_CACHE_TTL = 120; // Cache response 2 menit untuk cegah loop
 const MAX_IMAGE_UPLOADS_PER_ROOM = 2; // Maksimal 2 gambar per room
 const IMAGE_COUNTER_TTL = 3600; // Reset counter setiap 1 jam
-const MAX_CONVERSATION_HISTORY = 3; // Batasi history ke 3 pesan terakhir (hemat token)
+// const MAX_CONVERSATION_HISTORY = 3; // Batasi history ke 3 pesan terakhir (hemat token)
 
 const bufferTimers = {};
 const processingRooms = new Set();
@@ -145,18 +145,18 @@ const bearer = (t = "") => (/^bearer\s+/i.test(t) ? t : `Bearer ${t}`);
 // ========== BOT RESPONSE DETECTOR ==========
 function isBotResponse(text, roomId) {
   if (!text) return false;
-  
+
   // Cek apakah text ini adalah response bot yang baru dikirim
   const lastResponse = lastBotResponses.get(roomId);
   if (lastResponse) {
     const { text: lastText, time } = lastResponse;
     const timeDiff = Date.now() - time;
-    
+
     // Jika text PERSIS SAMA dan dalam 2 menit terakhir, ini bot echo
     if (text === lastText && timeDiff < RESPONSE_CACHE_TTL * 1000) {
       return true;
     }
-    
+
     // Cek similarity tinggi (90%+ sama) dan baru saja dikirim (dalam 30 detik)
     if (timeDiff < 30000) {
       const similarity = calculateSimilarity(text, lastText);
@@ -165,7 +165,7 @@ function isBotResponse(text, roomId) {
       }
     }
   }
-  
+
   // HANYA cek pattern yang SANGAT spesifik untuk bot response
   const strictBotPatterns = [
     /^📷\s*(sedang\s*)?(menganalisis|analisis)\s*gambar/i,
@@ -175,7 +175,7 @@ function isBotResponse(text, roomId) {
     /^terjadi\s*kendala.*kami\s*hubungkan/i,
     /^mohon\s*tunggu\s*sebentar/i,
   ];
-  
+
   return strictBotPatterns.some(pattern => pattern.test(text.trim()));
 }
 
@@ -184,12 +184,12 @@ function calculateSimilarity(str1, str2) {
   const len2 = str2.length;
   const maxLen = Math.max(len1, len2);
   if (maxLen === 0) return 1.0;
-  
+
   const minLen = Math.min(len1, len2);
-  const commonStart = str1.substring(0, minLen) === str2.substring(0, minLen) 
-    ? minLen 
+  const commonStart = str1.substring(0, minLen) === str2.substring(0, minLen)
+    ? minLen
     : 0;
-  
+
   return commonStart / maxLen;
 }
 
@@ -198,23 +198,23 @@ async function checkImageUploadLimit(roomId) {
   const key = `imgcount:${roomId}`;
   const count = await redis.get(key);
   const currentCount = parseInt(count || "0", 10);
-  
+
   if (currentCount >= MAX_IMAGE_UPLOADS_PER_ROOM) {
     console.log(`🖼️ Image limit: room ${roomId.slice(-8)} (${currentCount}/${MAX_IMAGE_UPLOADS_PER_ROOM})`);
     return false;
   }
-  
+
   return true;
 }
 
 async function incrementImageCounter(roomId) {
   const key = `imgcount:${roomId}`;
   const count = await redis.incr(key);
-  
+
   if (count === 1) {
     await redis.expire(key, IMAGE_COUNTER_TTL);
   }
-  
+
   console.log(`📊 Image counter: room ${roomId.slice(-8)} = ${count}/${MAX_IMAGE_UPLOADS_PER_ROOM}`);
   return count;
 }
@@ -223,16 +223,16 @@ async function incrementImageCounter(roomId) {
 async function checkRateLimit(roomId) {
   const key = `ratelimit:${roomId}`;
   const count = await redis.incr(key);
-  
+
   if (count === 1) {
     await redis.expire(key, RATE_LIMIT_WINDOW);
   }
-  
+
   if (count > MAX_REQUESTS_PER_MINUTE) {
     console.log(`🚫 Rate limit: room ${roomId.slice(-8)} (${count}/${MAX_REQUESTS_PER_MINUTE})`);
     return false;
   }
-  
+
   return true;
 }
 
@@ -240,17 +240,17 @@ async function checkRateLimit(roomId) {
 async function checkFlowiseRateLimit(roomId) {
   const key = `flowise:${roomId}`;
   const count = await redis.incr(key);
-  
+
   if (count === 1) {
     await redis.expire(key, RATE_LIMIT_WINDOW);
   }
-  
+
   // Flowise limit lebih ketat (3 per menit untuk vision/agent)
   if (count > 5) {
     console.log(`🚫 Flowise rate limit: room ${roomId.slice(-8)} (${count}/3)`);
     return false;
   }
-  
+
   return true;
 }
 
@@ -260,15 +260,15 @@ async function acquireProcessingLock(roomId) {
   if (processingRooms.has(roomId)) {
     return false;
   }
-  
+
   // Redis lock with NX (set if not exists)
   const lockKey = `processing:${roomId}`;
   const acquired = await redis.set(lockKey, Date.now().toString(), "EX", PROCESSING_LOCK_TTL, "NX");
-  
+
   if (!acquired) {
     return false;
   }
-  
+
   processingRooms.add(roomId);
   return true;
 }
@@ -283,10 +283,10 @@ async function addToBuffer(roomId, message) {
   const key = `buffer:${roomId}`;
   const old = JSON.parse((await redis.get(key)) || "[]");
   old.push(message);
-  
+
   // Batasi buffer max 5 pesan
   if (old.length > 5) old.shift();
-  
+
   await redis.set(key, JSON.stringify(old), "EX", 15);
 }
 
@@ -300,14 +300,14 @@ async function flushBuffer(roomId) {
 // ========== ANTI DUPLIKAT (ULTRA KETAT) ==========
 async function isDuplicate(roomId, messageId, text, senderId) {
   if (!roomId) return false;
-  
+
   // Buat primary key yang PASTI unik
   let primaryKey = null;
-  
+
   // Priority 1: Message ID (paling reliable)
   if (messageId) {
     primaryKey = `dedup:${roomId}:${messageId}`;
-  } 
+  }
   // Priority 2: Sender + text hash (jika tidak ada messageId)
   else if (senderId && text) {
     const hash = require('crypto')
@@ -326,17 +326,17 @@ async function isDuplicate(roomId, messageId, text, senderId) {
       .slice(0, 12);
     primaryKey = `dedup:${roomId}:txt:${hash}`;
   }
-  
+
   if (!primaryKey) return false;
-  
+
   // Single atomic check-and-set dengan Redis
   const result = await redis.set(primaryKey, "1", "EX", MESSAGE_DEDUP_TTL, "NX");
-  
+
   // Jika result null, berarti key sudah exist = duplikat
   if (!result) {
     return true; // Duplikat, skip tanpa log
   }
-  
+
   return false;
 }
 
@@ -372,36 +372,36 @@ async function sendQontakText(roomId, text) {
     console.error(`⚠️ Invalid params: roomId=${roomId}, text=${text ? 'exists' : 'empty'}`);
     return;
   }
-  
+
   // Sanitize text: remove control characters, limit length
   const sanitizedText = text
     .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '') // Remove control chars
     .trim()
     .slice(0, 4000); // Limit 4000 chars
-  
+
   if (!sanitizedText) {
     console.error(`⚠️ Text empty after sanitization`);
     return;
   }
-  
+
   // Cache response untuk deteksi loop
   lastBotResponses.set(roomId, { text: sanitizedText, time: Date.now() });
-  
+
   // Cleanup old cache (keep only last 50 rooms)
   if (lastBotResponses.size > 50) {
     const firstKey = lastBotResponses.keys().next().value;
     lastBotResponses.delete(firstKey);
   }
-  
+
   console.log(`📤 Room ${roomId.slice(-8)}`);
-  
+
   try {
     const payload = {
       room_id: roomId,
       type: "text",
       text: sanitizedText,
     };
-    
+
     const response = await axios.post(
       process.env.QONTAK_URL,
       payload,
@@ -413,24 +413,24 @@ async function sendQontakText(roomId, text) {
         timeout: 10000,
       }
     );
-    
+
     return response;
   } catch (err) {
     const status = err.response?.status;
     const errorData = err.response?.data;
-    
+
     console.error(`❌ Kirim gagal ${roomId.slice(-8)} [${status}]:`, {
       message: errorData?.message || err.message,
       errors: errorData?.errors,
       roomId: roomId,
       textLength: sanitizedText.length,
     });
-    
+
     if (status === 422) {
       console.error(`🚫 Room ${roomId.slice(-8)} mungkin closed/archived atau text invalid`);
       return null;
     }
-    
+
     throw err;
   }
 }
@@ -460,10 +460,10 @@ async function hasRoomTag(roomId, tag) {
 async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
   try {
     console.log(`🏷️ Menambahkan tag '${tag}' ke room ${roomId.slice(-8)}...`);
-    
+
     const form = new FormData();
     form.append("tag", tag);
-    
+
     const tagResponse = await axios.post(
       `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/tags`,
       form,
@@ -475,14 +475,14 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
         timeout: 5000,
       }
     );
-    
+
     console.log(`✅ Tag '${tag}' berhasil ditambahkan ke room ${roomId.slice(-8)}`);
     console.log(`📋 Response status: ${tagResponse.status}`);
 
     // Assign agents jika ada
     if (agentIds && agentIds.length > 0) {
       console.log(`👥 Assign ${agentIds.length} agent(s) ke room ${roomId.slice(-8)}...`);
-      
+
       const assignPromises = agentIds.map((userId) =>
         axios.post(
           `https://service-chat.qontak.com/api/open/v1/rooms/${roomId}/agents/${userId}`,
@@ -501,26 +501,26 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
           console.error(`❌ Assign agent ${userId.slice(-8)} gagal:`, err.response?.data || err.message);
         })
       );
-      
+
       await Promise.allSettled(assignPromises);
     } else {
       console.log(`⚠️ Tidak ada agent yang di-assign (agentIds kosong)`);
     }
-    
+
     return true;
   } catch (err) {
     const status = err.response?.status;
     const errorData = err.response?.data;
-    
+
     console.error(`❌ Tag '${tag}' GAGAL ditambahkan ke room ${roomId.slice(-8)}:`);
     console.error(`   Status: ${status}`);
     console.error(`   Error:`, errorData || err.message);
-    
+
     // Log detail jika 422 (validation error)
     if (status === 422) {
       console.error(`   Kemungkinan: tag sudah ada, room closed, atau invalid`);
     }
-    
+
     return false;
   }
 }
@@ -642,44 +642,32 @@ async function processMessages(roomId, agentSenders) {
       ? `${truncatedText}\n\n[Gambar]: ${visionSummary.slice(0, 300)}`
       : truncatedText || "(User tidak mengirim teks)";
 
-    let retries = 3;
-    let lastError = null;
-
-    while (retries > 0) {
-      try {
-        const respAgent = await axios.post(
-          process.env.AGENT_FLOW_URL,
-          {
-            question: finalQuestion,
-            overrideConfig: {
-              sessionId: roomId,
-              conversationBufferWindowSize: MAX_CONVERSATION_HISTORY,
-            },
+    try {
+      const respAgent = await axios.post(
+        process.env.AGENT_FLOW_URL,
+        {
+          question: finalQuestion,
+          overrideConfig: {
+            sessionId: roomId,
           },
-          {
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: bearer(process.env.AGENT_API_KEY || ""),
-            },
-            timeout: 30000,
-          }
-        );
+        },
+        {
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: bearer(process.env.AGENT_API_KEY || ""),
+          },
+          timeout: 30000,
+        }
+      );
 
-        answer = respAgent.data?.text || "";
-        console.log(`✅ Agent OK ${roomId.slice(-8)}`);
-        break;
-      } catch (err) {
-        lastError = err;
-        retries--;
-        const status = err.response?.status;
-        console.error(`❌ Agent error [${status}] (${3 - retries}/3): ${err.message}`);
-        if ([429, 500, 503].includes(status) && retries > 0) {
-          const delay = status === 429 ? 3000 : status === 500 ? 5000 : 7000;
-          console.log(`⏳ Retry in ${delay / 1000}s...`);
-          await new Promise((r) => setTimeout(r, delay));
-        } else break;
-      }
+      answer = respAgent.data?.text || "";
+      console.log(`✅ Agent OK ${roomId.slice(-8)}`);
+    } catch (err) {
+      const status = err.response?.status;
+      console.error(`❌ Agent error [${status}]: ${err.message}`);
+      answer = null; // fallback nanti akan menangani
     }
+
 
     // =============================
     // 🗣️ Kirim hasil ke user / eskalasi
@@ -740,7 +728,7 @@ app.post("/webhook/qontak", async (req, res) => {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
+  // if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
 
   // ========== ALLOWED CHANNELS ==========
   const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
