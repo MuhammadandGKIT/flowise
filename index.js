@@ -579,7 +579,7 @@ async function processMessages(roomId, agentSenders) {
         console.log(`🖼️ Image limit exceeded: room ${roomId.slice(-8)}`);
         const sent = await sendQontakText(
           roomId,
-          "⚠️ Maaf, Anda sudah mencapai batas maksimal pengiriman gambar (2 gambar per sesi). Kami akan menghubungkan Anda dengan tim kami untuk bantuan lebih lanjut."
+          "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut. Mohon hubungi kami kembali jika Anda belum mendapat update segera dari kami."
         );
         if (sent) await addRoomTagAndAssign(roomId, "botassign", agentSenders);
         return;
