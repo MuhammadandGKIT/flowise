@@ -714,6 +714,7 @@ app.post("/webhook/qontak", async (req, res) => {
   const agentSenders = [
     "da80f6d5-8c0c-4a2a-90f2-48453c88aac0",
     "471b3f67-1733-4ad3-9f2a-4963d757b00e",
+    "b61f869b-e94b-48b8-a6cc-3027eac8970a"
   ];
 
   if (agentSenders.includes(sender_id)) return;
