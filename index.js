@@ -43,7 +43,6 @@ const redis = require("./redisClient");
 /* ================================
    ROUTE CEK DATA USAGE
 ================================ */
-
 app.post("/cek", async (req, res) => {
   try {
     const { nomor } = req.body;
@@ -59,8 +58,8 @@ app.post("/cek", async (req, res) => {
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
 
-    // Ambil data dari struktur tradeData.subOrderList
-    const data = response.data?.tradeData?.subOrderList?.[0];
+    // Ambil data dari response.data.data (sesuai respons terbaru)
+    const data = response.data?.data;
     if (!data) {
       return res.status(404).json({
         error: "Data tidak ditemukan",
@@ -75,34 +74,34 @@ app.post("/cek", async (req, res) => {
       return mb.toFixed(2) + " MB";
     };
 
-    // Hitung total usage & per negara
+    // Hitung total usage & per negara (gunakan itemList dari API terbaru)
     let totalUsageKB = 0;
     const usagePerCountry = {};
-    const usageDetail = (data.usageInfoList || []).map((u) => {
-      const usedKB = parseInt(u.usedAmount, 10) || 0;
+    const usageDetail = (data.itemList || []).map((u) => {
+      const usedKB = parseInt(u.usage, 10) || 0;
       totalUsageKB += usedKB;
-      usagePerCountry[u.country] = (usagePerCountry[u.country] || 0) + usedKB;
+      usagePerCountry[u.enus] = (usagePerCountry[u.enus] || 0) + usedKB;
 
       return {
-        date: `${u.usedDate.slice(0, 4)}-${u.usedDate.slice(4, 6)}-${u.usedDate.slice(6, 8)}`,
-        country: u.country,
+        date: `${u.usageDate.slice(0, 4)}-${u.usageDate.slice(4, 6)}-${u.usageDate.slice(6, 8)}`,
+        country: u.enus,
         usage: formatData(usedKB),
       };
     });
 
     // Ringkasan
     const hasil = {
-      bundle: data.skuName,
-      activeDate: data.planStartTime,
-      endDate: data.planEndTime,
-      status: data.planStatus === "2" ? "Selesai" : "Aktif",
-      durationDays: data.totalDays,
+      bundle: data.product_name,
+      activeDate: new Date(parseInt(data.useSDate, 10)).toISOString().split("T")[0],
+      endDate: new Date(parseInt(data.useEDate, 10)).toISOString().split("T")[0],
+      status: data.esimStatus === 2 ? "Selesai" : "Aktif",
       totalUsage: formatData(totalUsageKB),
       usageByCountry: Object.entries(usagePerCountry).map(([country, used]) => ({
         country,
         usage: formatData(used),
       })),
       usageDetail,
+      variants: JSON.parse(data.attribute_variant || "[]"),
     };
 
     res.json({ nomor, hasil });
@@ -111,6 +110,7 @@ app.post("/cek", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 
@@ -622,12 +622,12 @@ async function processMessages(roomId, agentSenders) {
       }
 
       try {
-        await sendQontakText(roomId, "📷 Terimakasih, kami sedang menganalisis gambar Anda...");
+        await sendQontakText(roomId, "Terimakasih, kami sedang menganalisis gambar Anda...");
 
         const respVision = await axios.post(
           process.env.CHAT_FLOW_URL,
           {
-            question: combinedText || "Jelaskan gambar ini secara singkat",
+            question: combinedText,
             overrideConfig: { sessionId: roomId },
             uploads: files.slice(0, 1).map((f, i) => ({
               data: f.url,
