@@ -448,7 +448,7 @@ async function sendQontakText(roomId, text) {
 //     return tags.includes(tag);
 //   } catch (err) {
 //     console.error(`❌ Cek tag gagal: ${err.response?.data || err.message}`);
- 
+
 //     return false;
 //   }
 // }
@@ -591,7 +591,8 @@ async function processMessages(roomId, agentSenders) {
       .filter((m) => m.type === "text")
       .map((m) => m.text)
       .join(" ")
-      .trim();
+      .trim()
+      .slice(0, 500);
 
     const files = messages.filter((m) => m.type === "file");
 
@@ -670,8 +671,9 @@ async function processMessages(roomId, agentSenders) {
       : combinedText;
 
     const finalQuestion = visionSummary
-      ? `${truncatedText}\n\n[Gambar]: ${visionSummary.slice(0, 300)}`
-      : truncatedText || "(User tidak mengirim teks)";
+  ? `${(truncatedText || "").slice(0, 1000)}\n\n[Gambar]: ${visionSummary.slice(0, 300)}`
+  : (truncatedText || "").slice(0, 1000) || "(User tidak mengirim teks)";
+
 
     try {
       const respAgent = await axios.post(
@@ -696,7 +698,7 @@ async function processMessages(roomId, agentSenders) {
     } catch (err) {
       const status = err.response?.status;
       console.error(`❌ Agent error [${status}]: ${err.message}`);
-      answer = null; // fallback nanti akan menangani
+      answer = null; 
     }
 
 
