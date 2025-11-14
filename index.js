@@ -169,12 +169,21 @@ function isBotResponse(text, roomId) {
 
   // HANYA cek pattern yang SANGAT spesifik untuk bot response
   const strictBotPatterns = [
+     // Pattern dari screenshot Anda
+    /^kami\s+memiliki\s+produk\s+esim/i,
+    /anda\s+dapat\s+mengaksesnya\s+di\s+\[tautan\s+ini\]/i,
+    /pastikan\s+perangkat\s+anda\s+mendukung\s+esim/i,
+    /silakan\s+beri\s+tahu/i,
     /^📷\s*(sedang\s*)?(menganalisis|analisis)\s*gambar/i,
     /^⏳\s*terlalu\s*banyak\s*permintaan/i,
     /^baik,?\s*saya\s*hubungkan\s*dengan\s*admin/i,
     /^mohon\s*maaf,?\s*saya\s*hubungkan\s*dengan\s*tim/i,
     /^terjadi\s*kendala.*kami\s*hubungkan/i,
     /^mohon\s*tunggu\s*sebentar/i,
+     // Generic bot patterns
+    /^bot:/i,
+    /^assistant:/i,
+    /\[automated\s+response\]/i,
   ];
 
   return strictBotPatterns.some(pattern => pattern.test(text.trim()));
@@ -368,21 +377,85 @@ function guessMime(url = "") {
 }
 
 // ========== QONTAK HELPERS ==========
+// async function sendQontakText(roomId, text) {
+//   if (!text || !roomId) {
+//     console.error(`⚠️ Invalid params: roomId=${roomId}, text=${text ? 'exists' : 'empty'}`);
+//     return;
+//   }
+
+//   // Sanitize text: remove control characters, limit length
+//   const sanitizedText = text
+//     .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '') // Remove control chars
+//     .trim()
+//     .slice(0, 4000); // Limit 4000 chars
+
+//   if (!sanitizedText) {
+//     console.error(`⚠️ Text empty after sanitization`);
+//     return;
+//   }
+
+//   // Cache response untuk deteksi loop
+//   lastBotResponses.set(roomId, { text: sanitizedText, time: Date.now() });
+
+//   // Cleanup old cache (keep only last 10 rooms)
+//   if (lastBotResponses.size > 10) {
+//     const firstKey = lastBotResponses.keys().next().value;
+//     lastBotResponses.delete(firstKey);
+//   }
+
+//   console.log(`📤 Room ${roomId.slice(-8)}`);
+
+//   try {
+//     const payload = {
+//       room_id: roomId,
+//       type: "text",
+//       text: sanitizedText,
+//     };
+
+//     const response = await axios.post(
+//       process.env.QONTAK_URL,
+//       payload,
+//       {
+//         headers: {
+//           Authorization: bearer(process.env.QONTAK_TOKEN || ""),
+//           "Content-Type": "application/json",
+//         },
+//         timeout: 3000,
+//       }
+//     );
+
+//     return response;
+//   } catch (err) {
+//     const status = err.response?.status;
+//     const errorData = err.response?.data;
+
+//     console.error(`[${new Date().toISOString()}] ❌ Kirim gagal ${roomId.slice(-8)} [${status}]: ${message}`);
+
+//     if (status === 422) {
+//       console.error(`🚫 Room ${roomId.slice(-8)} mungkin closed/archived atau text invalid`);
+//       return null;
+//     }
+
+//     throw err;
+//   }
+// }
+// ========== QONTAK HELPERS (FIXED) ==========
 async function sendQontakText(roomId, text) {
   if (!text || !roomId) {
     console.error(`⚠️ Invalid params: roomId=${roomId}, text=${text ? 'exists' : 'empty'}`);
-    return;
+    return null;
   }
 
   // Sanitize text: remove control characters, limit length
   const sanitizedText = text
     .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '') // Remove control chars
+    .replace(/\r\n/g, '\n') // Normalize line breaks
     .trim()
     .slice(0, 4000); // Limit 4000 chars
 
   if (!sanitizedText) {
-    console.error(`⚠️ Text empty after sanitization`);
-    return;
+    console.error(`⚠️ Text empty after sanitization. Original: "${text.slice(0, 100)}"`);
+    return null;
   }
 
   // Cache response untuk deteksi loop
@@ -394,7 +467,7 @@ async function sendQontakText(roomId, text) {
     lastBotResponses.delete(firstKey);
   }
 
-  console.log(`📤 Room ${roomId.slice(-8)}`);
+  console.log(`📤 Sending to room ${roomId.slice(-8)}: "${sanitizedText.slice(0, 50)}..."`);
 
   try {
     const payload = {
@@ -411,47 +484,35 @@ async function sendQontakText(roomId, text) {
           Authorization: bearer(process.env.QONTAK_TOKEN || ""),
           "Content-Type": "application/json",
         },
-        timeout: 3000,
+        timeout: 10000, // Naikkan timeout jadi 10 detik
       }
     );
 
+    console.log(`✅ Message sent successfully to ${roomId.slice(-8)}`);
     return response;
   } catch (err) {
     const status = err.response?.status;
     const errorData = err.response?.data;
 
-    console.error(`[${new Date().toISOString()}] ❌ Kirim gagal ${roomId.slice(-8)} [${status}]: ${message}`);
+    // FIX: Ganti 'message' jadi 'err.message'
+    console.error(`[${new Date().toISOString()}] ❌ Kirim gagal ${roomId.slice(-8)} [${status}]: ${err.message}`);
 
     if (status === 422) {
       console.error(`🚫 Room ${roomId.slice(-8)} mungkin closed/archived atau text invalid`);
+      console.error(`   Error detail:`, errorData);
       return null;
+    }
+
+    // Log full error untuk debugging
+    if (errorData) {
+      console.error(`   Response data:`, JSON.stringify(errorData, null, 2));
     }
 
     throw err;
   }
 }
 
-// ========== TAG CHECKER (NO CACHE - ALWAYS FRESH) ==========
-// async function hasRoomTag(roomId, tag) {
-//   try {
-//     const resp = await axios.get(
-//       `${process.env.QONTAK_BASE_URL}/rooms/${roomId}`,
-//       {
-//         headers: {
-//           Authorization: bearer(process.env.QONTAK_TOKEN || ""),
-//           "Content-Type": "application/json",
-//         },
-//         timeout: 300000,
-//       }
-//     );
-//     const tags = resp.data?.data?.tags || [];
-//     return tags.includes(tag);
-//   } catch (err) {
-//     console.error(`❌ Cek tag gagal: ${err.response?.data || err.message}`);
 
-//     return false;
-//   }
-// }
 const CACHE_TTL = 15; // 15 detik biar aman
 
 async function hasRoomTag(roomId, tag) {
@@ -503,7 +564,7 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
           Authorization: bearer(process.env.QONTAK_TOKEN || ""),
           ...form.getHeaders(),
         },
-        timeout: 5000,
+        timeout: 10000,
       }
     );
 
@@ -524,7 +585,7 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
               Authorization: bearer(process.env.QONTAK_TOKEN || ""),
               "Content-Type": "application/json",
             },
-            timeout: 5000,
+            timeout: 10000,
           }
         ).then(() => {
           console.log(`✅ Agent ${userId.slice(-8)} berhasil di-assign`);
@@ -557,6 +618,172 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
 }
 
 // ========== PROCESS MESSAGES (CORE LOGIC) ==========
+// async function processMessages(roomId, agentSenders) {
+//   // ✅ CEK TAG ADMIN
+//   if (await hasRoomTag(roomId, "botassign")) {
+//     console.log(`🤖 Skip: room ${roomId.slice(-8)} sudah ditangani admin (botassign)`);
+//     await flushBuffer(roomId);
+//     return;
+//   }
+
+//   // ✅ LOCKING
+//   if (!(await acquireProcessingLock(roomId))) return;
+
+//   try {
+//     // if (await hasRoomTag(roomId, "botassign")) {
+//     //   console.log(`🤖 Skip: room ${roomId.slice(-8)} tagged during lock acquire`);
+//     //   await flushBuffer(roomId);
+//     //   return;
+//     // }
+
+//     // ✅ Rate limit
+//     if (!(await checkRateLimit(roomId))) {
+//       await sendQontakText(
+//         roomId,
+//         "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut. Mohon hubungi kami kembali jika Anda belum mendapat update segera dari kami."
+//       );
+//       return;
+//     }
+
+//     const messages = await flushBuffer(roomId);
+//     if (!messages.length) return;
+
+//     const combinedText = messages
+//       .filter((m) => m.type === "text")
+//       .map((m) => m.text)
+//       .join(" ")
+//       .trim()
+//       .slice(0, 500);
+
+//     const files = messages.filter((m) => m.type === "file");
+
+//     console.log(`🔄 Process ${roomId.slice(-8)}: ${files.length} file(s)`);
+
+//     let visionSummary = "";
+//     let answer = "";
+
+//     // =============================
+//     // 🔍 Jalankan CHAT_FLOW hanya jika ada file
+//     // =============================
+//     if (files.length > 0) {
+//       const currentImageCount = await incrementImageCounter(roomId);
+//       if (currentImageCount > MAX_IMAGE_UPLOADS_PER_ROOM) {
+//         console.log(`🖼️ Image limit exceeded: room ${roomId.slice(-8)}`);
+//         const sent = await sendQontakText(
+//           roomId,
+//           "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut. Mohon hubungi kami kembali jika Anda belum mendapat update segera dari kami."
+//         );
+//         if (sent) await addRoomTagAndAssign(roomId, "botassign", agentSenders);
+//         return;
+//       }
+
+//       // Cek limit flowise khusus vision
+//       if (!(await checkFlowiseRateLimit(roomId))) {
+//         await sendQontakText(roomId, "⏳ Mohon tunggu sebentar, sistem sedang memproses permintaan sebelumnya...");
+//         return;
+//       }
+
+//       try {
+//         await sendQontakText(roomId, "Terimakasih, kami sedang menganalisis gambar Anda...");
+
+//         const respVision = await axios.post(
+//           process.env.CHAT_FLOW_URL,
+//           {
+//             question: combinedText,
+//             overrideConfig: { sessionId: roomId },
+//             uploads: files.slice(0, 1).map((f, i) => ({
+//               data: f.url,
+//               type: "url",
+//               name: `img_${i}${f.url?.toLowerCase().endsWith(".png") ? ".png" : ".jpg"}`,
+//               mime: guessMime(f.url),
+//             })),
+//           },
+//           {
+//             headers: {
+//               Authorization: bearer(process.env.FLOWISE_API_KEY || ""),
+//               "Content-Type": "application/json",
+//             },
+//             timeout: 30000,
+//           }
+//         );
+
+//         visionSummary = respVision.data?.text?.trim() || "";
+//         console.log(`👁️ Vision OK ${roomId.slice(-8)}`);
+//       } catch (err) {
+//         const status = err.response?.status;
+//         console.error(`❌ Vision error [${status}]: ${err.message}`);
+//         visionSummary = "[Gagal analisis gambar]";
+//       }
+//     } else {
+//       console.log(`🚫 Tidak ada file — skip vision flow, langsung ke agent flow`);
+//     }
+
+//     // =============================
+//     // 🧠 Jalankan AGENT_FLOW
+//     // =============================
+//     if (!(await checkFlowiseRateLimit(roomId))) {
+//       await sendQontakText(roomId, "⏳ Mohon ditunggu, kami memerlukan pengecekan lebih lanjut. Mohon hubungi kami kembali jika Anda belum mendapat update segera dari kami.");
+//       return;
+//     }
+
+//     const maxInputLength = 500;
+//     const truncatedText = combinedText.length > maxInputLength
+//       ? combinedText.slice(0, maxInputLength) + "..."
+//       : combinedText;
+
+//     const finalQuestion = visionSummary
+//   ? `${(truncatedText || "").slice(0, 1000)}\n\n[Gambar]: ${visionSummary.slice(0, 300)}`
+//   : (truncatedText || "").slice(0, 1000) || "(User tidak mengirim teks)";
+
+
+//     try {
+//       const respAgent = await axios.post(
+//         process.env.AGENT_FLOW_URL,
+//         {
+//           question: finalQuestion,
+//           overrideConfig: {
+//             sessionId: roomId,
+//           },
+//         },
+//         {
+//           headers: {
+//             "Content-Type": "application/json",
+//             Authorization: bearer(process.env.AGENT_API_KEY || ""),
+//           },
+//           timeout: 30000,
+//         }
+//       );
+
+//       answer = respAgent.data?.text || "";
+//       console.log(`✅ Agent OK ${roomId.slice(-8)}`);
+//     } catch (err) {
+//       const status = err.response?.status;
+//       console.error(`❌ Agent error [${status}]: ${err.message}`);
+//       answer = null; 
+//     }
+
+
+//     // =============================
+//     // 🗣️ Kirim hasil ke user / eskalasi
+//     // =============================
+//     if (isAdminHandoffSignal(answer)) {
+//       const sent = await sendQontakText(roomId, "Baik, saya hubungkan dengan admin. Mohon tunggu.");
+//       if (sent) await addRoomTagAndAssign(roomId, "botassign", agentSenders);
+//     } else if (answer) {
+//       await sendQontakText(roomId, answer);
+//     } else {
+//       const sent = await sendQontakText(roomId, "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut.");
+//       if (sent) await addRoomTagAndAssign(roomId, "botassign", agentSenders);
+//     }
+//   } catch (err) {
+//     console.error(`❌ Fatal error ${roomId.slice(-8)}: ${err.message}`);
+//     await sendQontakText(roomId, "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut.");
+//     await addRoomTagAndAssign(roomId, "botassign", agentSenders);
+//   } finally {
+//     await releaseProcessingLock(roomId);
+//   }
+// }
+// ========== PROCESS MESSAGES (FIXED) ==========
 async function processMessages(roomId, agentSenders) {
   // ✅ CEK TAG ADMIN
   if (await hasRoomTag(roomId, "botassign")) {
@@ -566,15 +793,12 @@ async function processMessages(roomId, agentSenders) {
   }
 
   // ✅ LOCKING
-  if (!(await acquireProcessingLock(roomId))) return;
+  if (!(await acquireProcessingLock(roomId))) {
+    console.log(`🔒 Room ${roomId.slice(-8)} sedang diproses`);
+    return;
+  }
 
   try {
-    // if (await hasRoomTag(roomId, "botassign")) {
-    //   console.log(`🤖 Skip: room ${roomId.slice(-8)} tagged during lock acquire`);
-    //   await flushBuffer(roomId);
-    //   return;
-    // }
-
     // ✅ Rate limit
     if (!(await checkRateLimit(roomId))) {
       await sendQontakText(
@@ -585,7 +809,10 @@ async function processMessages(roomId, agentSenders) {
     }
 
     const messages = await flushBuffer(roomId);
-    if (!messages.length) return;
+    if (!messages.length) {
+      console.log(`⚠️ No messages in buffer for room ${roomId.slice(-8)}`);
+      return;
+    }
 
     const combinedText = messages
       .filter((m) => m.type === "text")
@@ -596,7 +823,7 @@ async function processMessages(roomId, agentSenders) {
 
     const files = messages.filter((m) => m.type === "file");
 
-    console.log(`🔄 Process ${roomId.slice(-8)}: ${files.length} file(s)`);
+    console.log(`🔄 Processing ${roomId.slice(-8)}: ${messages.length} msg(s), ${files.length} file(s)`);
 
     let visionSummary = "";
     let answer = "";
@@ -628,7 +855,7 @@ async function processMessages(roomId, agentSenders) {
         const respVision = await axios.post(
           process.env.CHAT_FLOW_URL,
           {
-            question: combinedText,
+            question: combinedText || "Jelaskan gambar ini",
             overrideConfig: { sessionId: roomId },
             uploads: files.slice(0, 1).map((f, i) => ({
               data: f.url,
@@ -647,14 +874,17 @@ async function processMessages(roomId, agentSenders) {
         );
 
         visionSummary = respVision.data?.text?.trim() || "";
-        console.log(`👁️ Vision OK ${roomId.slice(-8)}`);
+        console.log(`👁️ Vision response: ${visionSummary.slice(0, 100)}...`);
       } catch (err) {
         const status = err.response?.status;
         console.error(`❌ Vision error [${status}]: ${err.message}`);
+        if (err.response?.data) {
+          console.error(`   Detail:`, err.response.data);
+        }
         visionSummary = "[Gagal analisis gambar]";
       }
     } else {
-      console.log(`🚫 Tidak ada file — skip vision flow, langsung ke agent flow`);
+      console.log(`ℹ️ Tidak ada file — skip vision flow`);
     }
 
     // =============================
@@ -671,9 +901,10 @@ async function processMessages(roomId, agentSenders) {
       : combinedText;
 
     const finalQuestion = visionSummary
-  ? `${(truncatedText || "").slice(0, 1000)}\n\n[Gambar]: ${visionSummary.slice(0, 300)}`
-  : (truncatedText || "").slice(0, 1000) || "(User tidak mengirim teks)";
+      ? `${(truncatedText || "").slice(0, 1000)}\n\n[Gambar]: ${visionSummary.slice(0, 300)}`
+      : (truncatedText || "").slice(0, 1000) || "(User tidak mengirim teks)";
 
+    console.log(`🧠 Sending to agent: "${finalQuestion.slice(0, 100)}..."`);
 
     try {
       const respAgent = await axios.post(
@@ -694,28 +925,43 @@ async function processMessages(roomId, agentSenders) {
       );
 
       answer = respAgent.data?.text || "";
-      console.log(`✅ Agent OK ${roomId.slice(-8)}`);
+      console.log(`✅ Agent response received: "${answer.slice(0, 40)}..."`);
+      
+      // Tambahan debug jika answer kosong
+      if (!answer) {
+        console.error(`⚠️ Agent response empty! Full response:`, respAgent.data);
+      }
     } catch (err) {
       const status = err.response?.status;
       console.error(`❌ Agent error [${status}]: ${err.message}`);
+      if (err.response?.data) {
+        console.error(`   Detail:`, err.response.data);
+      }
       answer = null; 
     }
-
 
     // =============================
     // 🗣️ Kirim hasil ke user / eskalasi
     // =============================
     if (isAdminHandoffSignal(answer)) {
+      console.log(`👤 Admin handoff detected`);
       const sent = await sendQontakText(roomId, "Baik, saya hubungkan dengan admin. Mohon tunggu.");
       if (sent) await addRoomTagAndAssign(roomId, "botassign", agentSenders);
-    } else if (answer) {
-      await sendQontakText(roomId, answer);
+    } else if (answer && answer.trim()) {
+      console.log(`📨 Sending answer to user...`);
+      const sent = await sendQontakText(roomId, answer);
+      if (!sent) {
+        console.error(`⚠️ Failed to send answer, escalating to admin`);
+        await addRoomTagAndAssign(roomId, "botassign", agentSenders);
+      }
     } else {
+      console.log(`⚠️ No valid answer, escalating to admin`);
       const sent = await sendQontakText(roomId, "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut.");
       if (sent) await addRoomTagAndAssign(roomId, "botassign", agentSenders);
     }
   } catch (err) {
     console.error(`❌ Fatal error ${roomId.slice(-8)}: ${err.message}`);
+    console.error(`   Stack:`, err.stack);
     await sendQontakText(roomId, "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut.");
     await addRoomTagAndAssign(roomId, "botassign", agentSenders);
   } finally {
