@@ -945,7 +945,7 @@ async function processMessages(roomId, agentSenders) {
     // =============================
     if (isAdminHandoffSignal(answer)) {
       console.log(`👤 Admin handoff detected`);
-      const sent = await sendQontakText(roomId, "Baik, saya hubungkan dengan admin. Mohon tunggu.");
+      const sent = await sendQontakText(roomId, "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut. Mohon hubungi kami kembali jika Anda belum mendapat update segera dari kami.");
       if (sent) await addRoomTagAndAssign(roomId, "botassign", agentSenders);
     } else if (answer && answer.trim()) {
       console.log(`📨 Sending answer to user...`);
@@ -962,7 +962,7 @@ async function processMessages(roomId, agentSenders) {
   } catch (err) {
     console.error(`❌ Fatal error ${roomId.slice(-8)}: ${err.message}`);
     console.error(`   Stack:`, err.stack);
-    await sendQontakText(roomId, "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut.");
+    await sendQontakText(roomId, "Mohon ditunggu, kami memerlukan pengecekan lebih lanjut. Mohon hubungi kami kembali jika Anda belum mendapat update segera dari kami.");
     await addRoomTagAndAssign(roomId, "botassign", agentSenders);
   } finally {
     await releaseProcessingLock(roomId);
