@@ -886,7 +886,7 @@ app.post("/webhook/qontak", async (req, res) => {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
+  // if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
 
   // ========== ALLOWED CHANNELS ==========
   const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
