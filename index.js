@@ -376,69 +376,6 @@ function guessMime(url = "") {
   return "image/jpeg";
 }
 
-// ========== QONTAK HELPERS ==========
-// async function sendQontakText(roomId, text) {
-//   if (!text || !roomId) {
-//     console.error(`⚠️ Invalid params: roomId=${roomId}, text=${text ? 'exists' : 'empty'}`);
-//     return;
-//   }
-
-//   // Sanitize text: remove control characters, limit length
-//   const sanitizedText = text
-//     .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '') // Remove control chars
-//     .trim()
-//     .slice(0, 4000); // Limit 4000 chars
-
-//   if (!sanitizedText) {
-//     console.error(`⚠️ Text empty after sanitization`);
-//     return;
-//   }
-
-//   // Cache response untuk deteksi loop
-//   lastBotResponses.set(roomId, { text: sanitizedText, time: Date.now() });
-
-//   // Cleanup old cache (keep only last 10 rooms)
-//   if (lastBotResponses.size > 10) {
-//     const firstKey = lastBotResponses.keys().next().value;
-//     lastBotResponses.delete(firstKey);
-//   }
-
-//   console.log(`📤 Room ${roomId.slice(-8)}`);
-
-//   try {
-//     const payload = {
-//       room_id: roomId,
-//       type: "text",
-//       text: sanitizedText,
-//     };
-
-//     const response = await axios.post(
-//       process.env.QONTAK_URL,
-//       payload,
-//       {
-//         headers: {
-//           Authorization: bearer(process.env.QONTAK_TOKEN || ""),
-//           "Content-Type": "application/json",
-//         },
-//         timeout: 3000,
-//       }
-//     );
-
-//     return response;
-//   } catch (err) {
-//     const status = err.response?.status;
-//     const errorData = err.response?.data;
-
-//     console.error(`[${new Date().toISOString()}] ❌ Kirim gagal ${roomId.slice(-8)} [${status}]: ${message}`);
-
-//     if (status === 422) {
-//       console.error(`🚫 Room ${roomId.slice(-8)} mungkin closed/archived atau text invalid`);
-//       return null;
-//     }
-
-//     throw err;
-//   }
-// }
 // ========== QONTAK HELPERS (FIXED) ==========
 async function sendQontakText(roomId, text) {
   if (!text || !roomId) {
@@ -617,35 +554,8 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
   }
 }
 
-//delete session flowise
-async function deleteFlowiseSession(roomId) {
-  try {
-    // Gunakan endpoint DELETE yang sudah berhasil dicoba di curl
-    const url = `http://101.50.2.61:3000/api/v1/chatmessage/d7ebbe54-8ad0-46dc-a93d-c5736d6afb9a?sessionId=${roomId}`;
 
-    const resp = await axios.delete(url, {
-      headers: {
-        Authorization: "Bearer fYl5_hXOU342c7cfjJP_XpTNmnfzgH9VcWI39YdFEFI"
-      },
-      timeout: 10000,
-    });
 
-    // Cek apakah response berisi JSON valid
-    if (resp.data && resp.data.affected) {
-      console.log(`🧹 Session deleted for room: ${roomId}`, resp.data);
-    } else {
-      console.warn(`⚠️ Response unexpected when deleting session ${roomId}`, resp.data);
-    }
-
-    return true;
-  } catch (err) {
-    console.error(
-      `❌ Failed to delete session for ${roomId}:`,
-      err.response?.data || err.message
-    );
-    return false;
-  }
-}
 
 
 
@@ -660,7 +570,7 @@ async function processMessages(roomId, agentSenders) {
     await flushBuffer(roomId);
     return;
   }
-  const isResolved = room?.resolved_at != null;
+
   // ✅ LOCKING
   if (!(await acquireProcessingLock(roomId))) {
     console.log(`🔒 Room ${roomId.slice(-8)} sedang diproses`);
@@ -824,11 +734,7 @@ async function processMessages(roomId, agentSenders) {
         console.error(`⚠️ Failed to send answer, escalating to admin`);
         await addRoomTagAndAssign(roomId, "botassign", agentSenders);
       }
-      // if (isResolved) {
-      //   console.log(`🎉 Room ${roomId.slice(-8)} resolved — hapus session Flowise`);
-      //   await deleteFlowiseSession(roomId);
-      //   await flushBuffer(roomId);
-      // }
+
 
     } else {
       console.log(`⚠️ No valid answer, escalating to admin`);
@@ -847,6 +753,35 @@ async function processMessages(roomId, agentSenders) {
 }
 
 
+async function deleteFlowiseSession(roomId) {
+  try {
+    // Gunakan endpoint DELETE yang sudah berhasil dicoba di curl
+    const url = `http://101.50.2.61:3000/api/v1/chatmessage/d7ebbe54-8ad0-46dc-a93d-c5736d6afb9a?sessionId=${roomId}`;
+    const resp = await axios.delete(url, {
+      headers: {
+        Authorization: "Bearer fYl5_hXOU342c7cfjJP_XpTNmnfzgH9VcWI39YdFEFI"
+      },
+      timeout: 10000,
+    });
+
+    // Cek apakah response berisi JSON valid
+    if (resp.data && resp.data.affected) {
+      console.log(`🧹 Session deleted for room: ${roomId}`, resp.data);
+    } else {
+      console.warn(`⚠️ Response unexpected when deleting session ${roomId}`, resp.data);
+    }
+    return true;
+  } catch (err) {
+    console.error(
+      `❌ Failed to delete session for ${roomId}:`,
+      err.response?.data || err.message
+    );
+    return false;
+  }
+}
+
+
+
 // ========== WEBHOOK HANDLER ==========
 app.post("/webhook/qontak", async (req, res) => {
   const { sender_id, text, room, file, message_id } = req.body || {};
@@ -860,6 +795,24 @@ app.post("/webhook/qontak", async (req, res) => {
 
   // Validasi basic
   if (!roomId) return;
+
+  if (room?.resolved_at !== null && room?.resolved_at !== undefined) {
+    console.log(`🎯 Room ${roomId.slice(-8)} telah di-resolve, menghapus session...`);
+
+    // Hapus session dari Flowise
+    try {
+      const deleted = await deleteFlowiseSession(roomId);
+      if (deleted) {
+        console.log(`✅ Session Flowise untuk room ${roomId.slice(-8)} berhasil dihapus`);
+      } else {
+        console.warn(`⚠️ Gagal menghapus session Flowise untuk room ${roomId.slice(-8)}`);
+      }
+    } catch (err) {
+      console.error(`❌ Error saat menghapus session Flowise: ${err.message}`);
+    }
+
+    return; // Stop processing, room sudah resolved
+  }
 
   // ========== DUPLICATE CHECK PALING AWAL (CRITICAL!) ==========
   if (await isDuplicate(roomId, message_id, userMessage, sender_id)) {
@@ -886,7 +839,7 @@ app.post("/webhook/qontak", async (req, res) => {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
+  if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
 
   // ========== ALLOWED CHANNELS ==========
   const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
@@ -901,7 +854,7 @@ app.post("/webhook/qontak", async (req, res) => {
   }
 
   // ✅ Jika sampai sini, berarti valid message
-  console.log(`📥 ${roomId.slice(-8)}: ${userMessage?.slice(0, 40) || "(file)"}...`);
+  console.log(`📥 ${roomId.slice(-40)}: ${userMessage?.slice(0, 40) || "(file)"}...`);
 
   // ========== BUFFER MESSAGES ==========
   await addToBuffer(
