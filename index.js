@@ -751,8 +751,6 @@ app.post("/webhook/qontak", async (req, res) => {
 
     return res.sendStatus(200);
   }
-  // ✅ baru aman save
-  await save_chat(req.body);
 
   // ========== DUPLICATE CHECK PALING AWAL (CRITICAL!) ==========
   if (await isDuplicate(roomId, message_id, userMessage, sender_id)) {
@@ -1149,6 +1147,48 @@ app.post("/save_iccid", async (req, res) => {
     console.error(err);
     res.status(500).json({ status: "error", message: err.message });
   }
+});
+
+
+
+
+
+///GET CHAT HISTORY
+async function get_chat_history_latest() {
+  try {
+    const query = `
+      SELECT *
+      FROM chat_history
+      ORDER BY created_at DESC
+      LIMIT 30
+    `;
+    const { rows } = await pool.query(query);
+    return rows;
+  } catch (err) {
+    console.error("get_chat_history_latest error:", err.message);
+    return [];
+  }
+}
+//untuk melihat chat history
+app.get("/chat/latest", async (req, res) => {
+  try {
+    const chats = await get_chat_history_latest();
+    res.json({
+      success: true,
+      count: chats.length,
+      data: chats
+    });
+  } catch (err) {
+    console.error("Error fetching chat:", err.message);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+
+
+
+app.get("/chat/view", (req, res) => {
+  res.sendFile(path.join(__dirname, "chat.html"));
 });
 
 
