@@ -32,100 +32,16 @@ app.use(express.urlencoded({ limit: "10mb", extended: true }));
 // const { Queue, Worker } = require("bullmq");
 const redis = require("./redisClient");
 
-// const chatQueue = new Queue("chatQueue", { connection: client });
+const cekUsageRouter = require("./cek_usage");
 
-/**
- * @route POST /cek
- * @description Mengecek data penggunaan ICCID via API gkomunika.
- * @param {string} req.body.nomor - Nomor ICCID yang akan dicek.
- * @returns {Object} JSON hasil pengecekan, termasuk bundle, status, usage per negara, dll.
- */
-/* ================================
-   ROUTE CEK DATA USAGE
-================================ */
-app.post("/cek", async (req, res) => {
-  try {
-    const { nomor } = req.body;
-
-    if (!nomor) {
-      return res.status(400).json({ error: "nomor tidak boleh kosong" });
-    }
-
-    // Hit API gkomunika
-    const response = await axios.post(
-      "https://gkomunika.id/api/v1/check/data_info",
-      new URLSearchParams({ iccid: nomor }).toString(),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-    );
-
-    // Ambil data dari response.data.data (sesuai respons terbaru)
-    const data = response.data?.data;
-    if (!data) {
-      return res.status(404).json({
-        error: "Data tidak ditemukan",
-        raw: response.data,
-      });
-    }
-
-    // Helper format KB → MB/GB
-    const formatData = (kb) => {
-      const mb = kb / 1024;
-      if (mb >= 1024) return (mb / 1024).toFixed(2) + " GB";
-      return mb.toFixed(2) + " MB";
-    };
-
-    // Hitung total usage & per negara (gunakan itemList dari API terbaru)
-    let totalUsageKB = 0;
-    const usagePerCountry = {};
-    const usageDetail = (data.itemList || []).map((u) => {
-      const usedKB = parseInt(u.usage, 10) || 0;
-      totalUsageKB += usedKB;
-      usagePerCountry[u.enus] = (usagePerCountry[u.enus] || 0) + usedKB;
-
-      return {
-        date: `${u.usageDate.slice(0, 4)}-${u.usageDate.slice(4, 6)}-${u.usageDate.slice(6, 8)}`,
-        country: u.enus,
-        usage: formatData(usedKB),
-      };
-    });
-
-    // Ringkasan
-    const hasil = {
-      bundle: data.product_name,
-      activeDate: new Date(parseInt(data.useSDate, 10)).toISOString().split("T")[0],
-      endDate: new Date(parseInt(data.useEDate, 10)).toISOString().split("T")[0],
-      status: data.esimStatus === 2 ? "Selesai" : "Aktif",
-      totalUsage: formatData(totalUsageKB),
-      usageByCountry: Object.entries(usagePerCountry).map(([country, used]) => ({
-        country,
-        usage: formatData(used),
-      })),
-      usageDetail,
-      variants: JSON.parse(data.attribute_variant || "[]"),
-    };
-
-    res.json({ nomor, hasil });
-  } catch (err) {
-    console.error("=== ERROR ===", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
+app.use("/", cekUsageRouter);
 
 
 
 
 
 
-/* ================================
-   ROUTE WEBHOOK (Qontak)
-================================ */
 
-// 🔑 Ambil dari .env
-// Simpan state blok per room
-// state blok per room
-
-// ===== QUEUE BULLMQ =====
-// ====== CONSTANT ======
 //codingan siap lauching
 const BUFFER_TIMEOUT = 5_000; // 5 detik
 const MESSAGE_DEDUP_TTL = 90; // 90 detik untuk dedup
@@ -485,7 +401,7 @@ async function hasRoomTag(roomId, tag) {
 }
 
 
-
+//fungsi untuk menambahkan tag ke room
 async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
   try {
     console.log(`🏷️ Menambahkan tag '${tag}' ke room ${roomId.slice(-8)}...`);
@@ -564,21 +480,21 @@ async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
 
 async function processMessages(roomId, agentSenders) {
 
-  // ✅ CEK TAG ADMIN
+  // CEK TAG ADMIN
   if (await hasRoomTag(roomId, "botassign")) {
     console.log(`🤖 Skip: room ${roomId.slice(-8)} sudah ditangani admin (botassign)`);
     await flushBuffer(roomId);
     return;
   }
 
-  // ✅ LOCKING
+  //  LOCKING
   if (!(await acquireProcessingLock(roomId))) {
     console.log(`🔒 Room ${roomId.slice(-8)} sedang diproses`);
     return;
   }
 
   try {
-    // ✅ Rate limit
+    //  Rate limit
     if (!(await checkRateLimit(roomId))) {
       await sendQontakText(
         roomId,
@@ -781,9 +697,11 @@ async function deleteFlowiseSession(roomId) {
 }
 
 
-
+const { save_chat } = require("./services/chatservice");
 // ========== WEBHOOK HANDLER ==========
 app.post("/webhook/qontak", async (req, res) => {
+  save_chat(req.body);
+
   const { sender_id, text, room, file, message_id } = req.body || {};
   const channelIntegrationId = req.body.channel_integration_id || room?.channel_integration_id;
   const roomId = room?.id || req.body?.room_id;
@@ -878,142 +796,44 @@ app.post("/webhook/qontak", async (req, res) => {
 });
 
 
-/**
- * ===============================
- * ROUTE: Sinkronisasi Produk
- * ===============================
- * Endpoint ini digunakan untuk mengambil data produk dari Google Sheets (GAS),
- * memetakan data sesuai format database, dan menyimpan/ memperbarui data
- * tersebut di database PostgreSQL.
- *
- * Cara Kerja:
- * 1. Ambil data dari Google Apps Script (GAS)
- * 2. Map & filter data sesuai header Google Sheet
- * 3. Insert atau update data ke database (upsert)
- */
 
-app.get("/sync-products", async (req, res) => {
-  try {
-    // ===============================
-    // 1️⃣ Ambil data produk dari GAS
-    // ===============================
-    const response = await fetch(GAS_URL);
+//save chat 
+// async function save_chat(body) {
+//   try {
+//     const data = {
+//       room_id: body?.room_id || null,
+//       sender_id: body?.sender_id || null,
+//       name: body?.name || null,
+//       tags: JSON.stringify(body?.tags || []),
+//       channel_account: body?.channel_account || null,
+//       account_uniq_id: body?.account_uniq_id || null,
+//       text: body?.text || null,
+//       resolve_at: body?.resolved_at || null,
+//     };
 
-    // Jika gagal fetch data dari GAS, tampilkan error
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(
-        `GAS fetch failed: ${response.status} ${response.statusText}. Response: ${text.substring(0, 200)}...`
-      );
-    }
+//     await pool("chat_history").insert(data);
 
-    const products = await response.json();
-
-    // Jika data kosong, langsung kembalikan response sukses tapi total 0
-    if (!Array.isArray(products) || products.length === 0) {
-      return res.json({
-        status: "success",
-        total: 0,
-        message: "Tidak ada produk di GAS",
-      });
-    }
-
-    // =========================================
-    // 2️⃣ Mapping & Filter data sesuai header
-    // =========================================
-    // Tujuannya untuk memastikan field sesuai dengan tabel database
-    const mappedProducts = products
-      .map((p) => ({
-        id_produk: p["ID Produk"]?.toString().trim() || null,
-        merek: p["Merek"] || null,
-        nama_produk: p["Nama Produk"] || null,
-        deskripsi_produk: p["Deskripsi Produk"] || null,
-        komisi_afiliasi:
-          p["Komisi Afiliasi %"] !== undefined && p["Komisi Afiliasi %"] !== ""
-            ? Number(p["Komisi Afiliasi %"])
-            : null,
-        supplier: p["Supplier"] || null,
-        coverage_negara: p["Coverage Negara"] || null,
-        sku: p["SKU"] || null,
-        tautan_tiktok: p["Tautan (TikTok Shop)"] || null,
-        tautan_web: p["Tautan Web"] || null,
-        tautan_tokopedia: p["Tautan Tokopedia"] || null,
-      }))
-      .filter((p) => p.id_produk); // skip baris tanpa ID Produk
-
-    // =========================================
-    // 3️⃣ Insert atau Update data ke Database
-    // =========================================
-    // Menggunakan UPSERT (INSERT ... ON CONFLICT) untuk menghindari duplikasi
-    for (const prod of mappedProducts) {
-      await pool.query(
-        `INSERT INTO products (
-          id_produk, merek, nama_produk, deskripsi_produk, komisi_afiliasi,
-          supplier, coverage_negara, sku, tautan_tiktok, tautan_web, tautan_tokopedia,
-          created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),NOW())
-        ON CONFLICT (id_produk) DO UPDATE SET
-          merek = EXCLUDED.merek,
-          nama_produk = EXCLUDED.nama_produk,
-          deskripsi_produk = EXCLUDED.deskripsi_produk,
-          komisi_afiliasi = EXCLUDED.komisi_afiliasi,
-          supplier = EXCLUDED.supplier,
-          coverage_negara = EXCLUDED.coverage_negara,
-          sku = EXCLUDED.sku,
-          tautan_tiktok = EXCLUDED.tautan_tiktok,
-          tautan_web = EXCLUDED.tautan_web,
-          tautan_tokopedia = EXCLUDED.tautan_tokopedia,
-          updated_at = NOW()`,
-        [
-          prod.id_produk,
-          prod.merek,
-          prod.nama_produk,
-          prod.deskripsi_produk,
-          prod.komisi_afiliasi,
-          prod.supplier,
-          prod.coverage_negara,
-          prod.sku,
-          prod.tautan_tiktok,
-          prod.tautan_web,
-          prod.tautan_tokopedia,
-        ]
-      );
-    }
-
-    // ===============================
-    // 4️⃣ Response sukses
-    // ===============================
-    res.json({
-      status: "success",
-      total: mappedProducts.length,
-      message: `Berhasil menyimpan ${mappedProducts.length} produk ke database 🚀`,
-    });
-  } catch (err) {
-    // ===============================
-    // Error Handling
-    // ===============================
-    console.error("❌ Error sinkronisasi ke DB:", err);
-    res.status(500).json({ status: "error", message: err.message });
-  }
-});
+//     console.log("✅ Data tersimpan di database chat_history");
+//   } catch (err) {
+//     console.error("❌ Error save_chat:", err.message);
+//   }
+// }
 
 
 
 
 
 
-/**
- * ===============================
- * ROUTE: Ambil Daftar Produk
- * ===============================
- * Endpoint ini digunakan untuk mengambil data produk dari database.
- * Hanya mengembalikan field tertentu: nama_produk, supplier, deskripsi_produk,
- * coverage_negara, dan tautan_web.
- *
- * Fitur:
- * - Pencarian berdasarkan nama_produk
- * - Mengembalikan list produk sesuai query pencarian (jika ada)
- */
+
+
+// ===============================
+// Endpoin untuk sinkronisasi product dari appscript ke database
+// ===============================
+const syncProductRouter = require("./product/sync-product");
+app.use("/", syncProductRouter);
+
+
+
 app.get("/products", async (req, res) => {
   try {
     // ===============================
@@ -1203,32 +1023,6 @@ app.get("/transactions_iccid", async (req, res) => {
     res.status(500).json({ status: "error", message: err.message });
   }
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 /* ================================

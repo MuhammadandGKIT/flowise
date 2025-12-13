@@ -9,6 +9,7 @@
     "docs": "npx typedoc --out docs src"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.55.0",
     "axios": "^1.12.2",
     "bullmq": "^5.61.0",
     "dotenv": "^16.4.5",
