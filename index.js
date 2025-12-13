@@ -701,42 +701,58 @@ const { save_chat } = require("./services/chatservice");
 // ========== WEBHOOK HANDLER ==========
 app.post("/webhook/qontak", async (req, res) => {
 
-    res.sendStatus(200);
-  
+
+
 
   const { sender_id, text, room, file, message_id } = req.body || {};
   const channelIntegrationId = req.body.channel_integration_id || room?.channel_integration_id;
   const roomId = room?.id || req.body?.room_id;
   const userMessage = text?.trim();
+  const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
+  if (!allowedChannels.includes(channelIntegrationId)) {
+    return res.sendStatus(200);
+  }
 
-  // Response 200 langsung
+  if (!roomId) {
+    return res.sendStatus(200);
+  }
 
-const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
-  if (!allowedChannels.includes(channelIntegrationId)) return;
 
-  // ✅ baru aman save
-  await save_chat(req.body);
 
-  // Validasi basic
-  if (!roomId) return;
+
 
   if (room?.resolved_at !== null && room?.resolved_at !== undefined) {
-    console.log(`🎯 Room ${roomId.slice(-8)} telah di-resolve, menghapus session...`);
+    console.log(`🎯 Room ${roomId.slice(-8)} telah di-resolve, processing...`);
 
-    // Hapus session dari Flowise
     try {
+      // ⚠️ CRITICAL: Pastikan ini selesai sebelum response
+      await save_chat(req.body);
+
+      console.log(`📤 Mengirim chat ke Flowise untuk room ${roomId.slice(-8)}...`);
+      const flowiseResult = await send_all_chat_to_flowise(roomId);
+
+      if (!flowiseResult) {
+        console.error(`❌ send_all_chat_to_flowise returned null untuk room ${roomId.slice(-8)}`);
+      } else {
+        console.log(`✅ Berhasil kirim ke Flowise & Lark untuk room ${roomId.slice(-8)}`);
+      }
+
+      // Hapus session
       const deleted = await deleteFlowiseSession(roomId);
       if (deleted) {
-        console.log(`✅ Session Flowise untuk room ${roomId.slice(-8)} berhasil dihapus`);
-      } else {
-        console.warn(`⚠️ Gagal menghapus session Flowise untuk room ${roomId.slice(-8)}`);
+        console.log(`✅ Session Flowise dihapus untuk room ${roomId.slice(-8)}`);
       }
+
     } catch (err) {
-      console.error(`❌ Error saat menghapus session Flowise: ${err.message}`);
+      console.error(`❌ CRITICAL ERROR processing resolved room ${roomId.slice(-8)}:`, err);
+      console.error(err.stack);
+      // Tetap kirim 200 agar webhook tidak retry
     }
 
-    return; // Stop processing, room sudah resolved
+    return res.sendStatus(200);
   }
+  // ✅ baru aman save
+  await save_chat(req.body);
 
   // ========== DUPLICATE CHECK PALING AWAL (CRITICAL!) ==========
   if (await isDuplicate(roomId, message_id, userMessage, sender_id)) {
@@ -766,7 +782,7 @@ const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
   // if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
 
   // ========== ALLOWED CHANNELS ==========
-  
+
 
   // ✅ CRITICAL FIX: CEK TAG BOTASSIGN DI WEBHOOK HANDLER
   // Ini mencegah bot memproses room yang sudah di-assign ke admin
@@ -775,7 +791,7 @@ const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
     console.log(`🛑 Skip: room ${roomId.slice(-8)} sudah tagged botassign`);
     return;
   }
-
+  
   // ✅ Jika sampai sini, berarti valid message
   console.log(`📥 ${roomId.slice(-40)}: ${userMessage?.slice(0, 40) || "(file)"}...`);
 
@@ -801,28 +817,176 @@ const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
 });
 
 
+async function send_all_chat_to_flowise(roomId) {
+  try {
+    // 1. Ambil semua chat berdasarkan room_id
+    const result = await pool.query(
+      `SELECT room_id, sender_id, name, participant_type, channel_account, 
+              account_uniq_id, text 
+       FROM chat_history 
+       WHERE room_id = $1 
+       ORDER BY created_at ASC`,
+      [roomId]
+    );
 
-//save chat 
-// async function save_chat(body) {
-//   try {
-//     const data = {
-//       room_id: body?.room_id || null,
-//       sender_id: body?.sender_id || null,
-//       name: body?.name || null,
-//       tags: JSON.stringify(body?.tags || []),
-//       channel_account: body?.channel_account || null,
-//       account_uniq_id: body?.account_uniq_id || null,
-//       text: body?.text || null,
-//       resolve_at: body?.resolved_at || null,
-//     };
+    if (result.rows.length === 0) {
+      console.log("⚠️ Tidak ada chat ditemukan");
+      return;
+    }
 
-//     await pool("chat_history").insert(data);
+    const chats = result.rows;
 
-//     console.log("✅ Data tersimpan di database chat_history");
-//   } catch (err) {
-//     console.error("❌ Error save_chat:", err.message);
-//   }
-// }
+    // 2. Tentukan data meta
+
+    const customer = chats.find(x => x.participant_type === "Customer");
+    const agent = chats.find(x => x.participant_type === "Agent");
+
+    const customerName = customer?.name || "Customer";
+    const agentName = agent?.name || "Agent";
+    const channel = customer?.channel_account || "-";
+    const phone = customer?.account_uniq_id || "-";
+
+    // 3. Gabungkan semua text chat
+    const allText = chats
+      .map(c => `${c.participant_type}: ${c.text}`)
+      .join("\n");
+
+    // 4. Bentuk prompt string akhir
+    const finalPrompt =
+      `Customer Name: ${customerName}. Customer Phone: ${phone}. Channel: ${channel}. Agent Name: ${agentName}.\n\n` +
+      `Chat History: ${allText}`;
+
+
+    console.log("Prompt final yang dikirim ke Flowise:\n", finalPrompt);
+
+    // 5. Kirim ke Flowise
+    const response = await fetch(
+      "http://101.50.2.61:3000/api/v1/prediction/96e09b89-9cc6-44d9-a3ca-50978d0a1fe1",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: finalPrompt,
+          overrideConfig: {
+            sessionId: roomId
+          }
+        })
+      }
+    );
+    const jsonOutput = await response.json();
+    // console.log("📥 Response dari Flowise:", jsonOutput);
+    //proses mengirim ke lark
+    try {
+      await postToLark(jsonOutput);
+      if (roomId) {
+        await deleteChatHistory(roomId);
+
+      } else {
+        console.warn("⚠️ Tidak ada room_id, tidak bisa hapus chat history.");
+      }
+    } catch (error) {
+      console.error("Gagal kirim ke Lark:", error.message);
+    }
+    return jsonOutput;
+
+  } catch (err) {
+    console.error("❌ send_all_chat_to_flowise error:", err.stack || err.message);
+    return null;
+  }
+}
+
+
+const lark = require('@larksuiteoapi/node-sdk');
+
+const client = new lark.Client({
+  appId: 'cli_a9b08d686d785e1c',
+  appSecret: 'OspfJ0odyeu3UBhY72x52dnBspfO8eZl',
+  disableTokenCache: false
+});
+
+const LARK_APP_TOKEN = "YjFIbHekKaIMs7sYdcaj0EVBp2b";
+const LARK_TABLE_ID = "tbljwPpANEL0gDAh";
+
+async function postToLark(jsonOutput) {
+  try {
+    if (!jsonOutput) throw new Error("jsonOutput kosong");
+
+    let parsedData = {};
+
+    if (jsonOutput.text) {
+      try {
+        parsedData = JSON.parse(jsonOutput.text);
+        console.log("📋 Parsed Data dari Flowise:", parsedData);
+      } catch (e) {
+        console.error("❌ Gagal parse jsonOutput.text:", e);
+        throw new Error("Format response Flowise tidak valid");
+      }
+    }
+
+    // ✅ PERBAIKAN: Pakai object biasa, BUKAN Map!
+    const fieldsData = {
+      'sentimen': parsedData.setiment || parsedData.sentiment || '',
+      'category_kendala': parsedData.category || '',
+      'detail_kendala': parsedData['detail kendala'] || '',
+      'result': parsedData.result || '',
+      'product_bermasalah': parsedData['product bermasalah'] || '',
+      'nama_customer': parsedData['name customer'] || '',
+      'nomor_telepon': parsedData['nomor telpon'] || '',
+      'nama_channel': parsedData.channel || ''
+    };
+
+    console.log("📤 Fields yang akan dikirim:", fieldsData);
+
+    // ✅ PERBAIKAN: Pakai .create() bukan .batchCreate() untuk single record
+    const res = await client.bitable.appTableRecord.create({
+      path: {
+        app_token: LARK_APP_TOKEN,
+        table_id: LARK_TABLE_ID
+      },
+      data: {
+        fields: fieldsData  // ⚠️ Plain object, bukan Map!
+      }
+    });
+
+    console.log("✅ Berhasil kirim ke Lark");
+
+
+
+    return res;
+
+  } catch (err) {
+    console.error("ERROR kirim ke Lark SDK:");
+
+    if (err.response?.data) {
+      console.error(JSON.stringify(err.response.data, null, 2));
+    } else {
+      console.error(err.message);
+    }
+
+    throw err;
+  }
+}
+
+async function deleteChatHistory(room_id) {
+  try {
+    console.log(`Menjalankan deleteChatHistory untuk room_id: ${room_id}`);
+    const result = await pool.query(
+      `DELETE FROM chat_history WHERE room_id = $1`,
+      [room_id]
+    );
+
+    return true;
+  } catch (err) {
+    console.error("Gagal menjalankan deleteChatHistory:", err.message);
+    return false;
+  }
+}
+
+
+
+
+
+
 
 
 
