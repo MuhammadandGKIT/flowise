@@ -401,7 +401,7 @@ async function hasRoomTag(roomId, tag) {
 }
 
 
-//fungsi untuk menambahkan tag ke room
+//fungsi untuk menambahkan tag ke room saja
 async function addRoomTagAndAssign(roomId, tag, agentIds = []) {
   try {
     console.log(`🏷️ Menambahkan tag '${tag}' ke room ${roomId.slice(-8)}...`);
