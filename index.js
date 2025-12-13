@@ -700,21 +700,22 @@ async function deleteFlowiseSession(roomId) {
 const { save_chat } = require("./services/chatservice");
 // ========== WEBHOOK HANDLER ==========
 app.post("/webhook/qontak", async (req, res) => {
-  // ========== ALLOWED CHANNELS ==========
+
+    res.sendStatus(200);
   
 
   const { sender_id, text, room, file, message_id } = req.body || {};
   const channelIntegrationId = req.body.channel_integration_id || room?.channel_integration_id;
   const roomId = room?.id || req.body?.room_id;
   const userMessage = text?.trim();
-  const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
-  if (!allowedChannels.includes(channelIntegrationId)) return;
-  
-  save_chat(req.body);
 
   // Response 200 langsung
-  res.sendStatus(200);
 
+const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
+  if (!allowedChannels.includes(channelIntegrationId)) return;
+
+  // ✅ baru aman save
+  await save_chat(req.body);
 
   // Validasi basic
   if (!roomId) return;
@@ -764,7 +765,8 @@ app.post("/webhook/qontak", async (req, res) => {
 
   // if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
 
-
+  // ========== ALLOWED CHANNELS ==========
+  
 
   // ✅ CRITICAL FIX: CEK TAG BOTASSIGN DI WEBHOOK HANDLER
   // Ini mencegah bot memproses room yang sudah di-assign ke admin
