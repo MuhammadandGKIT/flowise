@@ -701,9 +701,6 @@ const { save_chat } = require("./services/chatservice");
 // ========== WEBHOOK HANDLER ==========
 app.post("/webhook/qontak", async (req, res) => {
 
-
-
-
   const { sender_id, text, room, file, message_id } = req.body || {};
   const channelIntegrationId = req.body.channel_integration_id || room?.channel_integration_id;
   const roomId = room?.id || req.body?.room_id;
@@ -855,7 +852,7 @@ async function send_all_chat_to_flowise(roomId) {
       `Chat History: ${allText}`;
 
 
-    console.log("Prompt final yang dikirim ke Flowise:\n", finalPrompt);
+    console.log("pesan dikirim ke flowise");
 
     // 5. Kirim ke Flowise
     const response = await fetch(
@@ -933,7 +930,7 @@ async function postToLark(jsonOutput) {
       'nama_channel': parsedData.channel || ''
     };
 
-    console.log("📤 Fields yang akan dikirim:", fieldsData);
+    console.log("📤 Fields yang akan dikirim ke lark");
 
     // ✅ PERBAIKAN: Pakai .create() bukan .batchCreate() untuk single record
     const res = await client.bitable.appTableRecord.create({
