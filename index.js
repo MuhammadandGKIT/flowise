@@ -700,54 +700,43 @@ async function deleteFlowiseSession(roomId) {
 const { save_chat } = require("./services/chatservice");
 // ========== WEBHOOK HANDLER ==========
 app.post("/webhook/qontak", async (req, res) => {
-
   const { sender_id, text, room, file, message_id } = req.body || {};
   const channelIntegrationId = req.body.channel_integration_id || room?.channel_integration_id;
   const roomId = room?.id || req.body?.room_id;
   const userMessage = text?.trim();
-  const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
-  if (!allowedChannels.includes(channelIntegrationId)) {
-    return res.sendStatus(200);
-  }
-
-  if (!roomId) {
-    return res.sendStatus(200);
-  }
 
 
-
-
-
+  // Response 200 langsung
+  res.sendStatus(200);
   if (room?.resolved_at !== null && room?.resolved_at !== undefined) {
-    console.log(`🎯 Room ${roomId.slice(-8)} telah di-resolve, processing...`);
+    console.log(`🎯 Room ${roomId.slice(-8)} telah di-resolve, menghapus session...`);
 
+    // Hapus session dari Flowise
     try {
-      // ⚠️ CRITICAL: Pastikan ini selesai sebelum response
-      await save_chat(req.body);
-
-      console.log(`📤 Mengirim chat ke Flowise untuk room ${roomId.slice(-8)}...`);
-      const flowiseResult = await send_all_chat_to_flowise(roomId);
-
-      if (!flowiseResult) {
-        console.error(`❌ send_all_chat_to_flowise returned null untuk room ${roomId.slice(-8)}`);
-      } else {
-        console.log(`✅ Berhasil kirim ke Flowise & Lark untuk room ${roomId.slice(-8)}`);
-      }
-
-      // Hapus session
+      await send_all_chat_to_flowise(roomId);
+      console.log(`✅ Chat history berhasil dikirim ke Flowise`);
       const deleted = await deleteFlowiseSession(roomId);
       if (deleted) {
-        console.log(`✅ Session Flowise dihapus untuk room ${roomId.slice(-8)}`);
+        console.log(`✅ Session Flowise untuk room ${roomId.slice(-8)} berhasil dihapus`);
+      } else {
+        console.warn(`⚠️ Gagal menghapus session Flowise untuk room ${roomId.slice(-8)}`);
       }
-
     } catch (err) {
-      console.error(`❌ CRITICAL ERROR processing resolved room ${roomId.slice(-8)}:`, err);
-      console.error(err.stack);
-      // Tetap kirim 200 agar webhook tidak retry
+      console.error(`❌ Error saat menghapus session Flowise: ${err.message}`);
     }
 
-    return res.sendStatus(200);
+    return; // Stop processing, room sudah resolved
   }
+  try {
+    await save_chat(req.body);
+  } catch (err) {
+    console.error(`❌ Error saving chat: ${err.message}`);
+  }
+
+  // Validasi basic
+  if (!roomId) return;
+
+  
 
   // ========== DUPLICATE CHECK PALING AWAL (CRITICAL!) ==========
   if (await isDuplicate(roomId, message_id, userMessage, sender_id)) {
@@ -777,7 +766,8 @@ app.post("/webhook/qontak", async (req, res) => {
   // if (sender_id && allowedSenders.length && !allowedSenders.includes(sender_id)) return;
 
   // ========== ALLOWED CHANNELS ==========
-
+  const allowedChannels = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
+  if (!allowedChannels.includes(channelIntegrationId)) return;
 
   // ✅ CRITICAL FIX: CEK TAG BOTASSIGN DI WEBHOOK HANDLER
   // Ini mencegah bot memproses room yang sudah di-assign ke admin
@@ -786,7 +776,7 @@ app.post("/webhook/qontak", async (req, res) => {
     console.log(`🛑 Skip: room ${roomId.slice(-8)} sudah tagged botassign`);
     return;
   }
-  
+
   // ✅ Jika sampai sini, berarti valid message
   console.log(`📥 ${roomId.slice(-40)}: ${userMessage?.slice(0, 40) || "(file)"}...`);
 
@@ -911,7 +901,7 @@ async function postToLark(jsonOutput) {
     if (jsonOutput.text) {
       try {
         parsedData = JSON.parse(jsonOutput.text);
-        console.log("📋 Parsed Data dari Flowise:", parsedData);
+        console.log("Berhasil di parse dari flowise");
       } catch (e) {
         console.error("❌ Gagal parse jsonOutput.text:", e);
         throw new Error("Format response Flowise tidak valid");
