@@ -4,14 +4,14 @@ const pool = require("../db/connection");
 class ChatService {
   constructor() {
     this.buffer = [];
-    this.BATCH_SIZE = 50; // insert per 50 chat
-    this.FLUSH_INTERVAL = 20000; // atau setiap 3 detik
+    this.BATCH_SIZE = 50;
+    this.FLUSH_INTERVAL = 20000;
     this.isFlushig = false;
+    
+    // ✅ Allowed channels untuk filter (tidak disimpan)
+    this.ALLOWED_CHANNELS = ["58d68cb0-fcdc-4d95-a48b-a94d9bb145e8"];
 
-    // Auto flush berkala
     this.startAutoFlush();
-
-    // Graceful shutdown - flush sebelum app mati
     this.setupGracefulShutdown();
   }
 
@@ -25,13 +25,21 @@ class ChatService {
 
   async save_chat(body) {
     try {
+      // ✅ FILTER: Hanya channel yang diizinkan
+      const channelId = body.channel_integration_id || body.room?.channel_integration_id;
+      
+      if (!channelId || !this.ALLOWED_CHANNELS.includes(channelId)) {
+        console.log(`⏭️ Skip save: channel ${channelId?.slice(-8) || 'unknown'} not allowed`);
+        return { success: true, skipped: true, reason: "channel_not_allowed" };
+      }
+
       // Validasi data penting
       if (!body.room?.id && !body.room_id) {
         console.warn("⚠️ room_id is missing");
         return { success: false, error: "room_id required" };
       }
 
-      // Tambah ke buffer
+      // ✅ Tambah ke buffer (tanpa channel_integration_id)
       this.buffer.push({
         room_id: body.room?.id || body.room_id,
         sender_id: body.sender_id,
@@ -64,7 +72,6 @@ class ChatService {
 
     this.isFlushig = true;
 
-    // Copy buffer & kosongkan
     const toInsert = [...this.buffer];
     this.buffer = [];
 
@@ -73,7 +80,6 @@ class ChatService {
     try {
       await client.query('BEGIN');
 
-      // Build batch insert query
       const values = [];
       const params = [];
       let paramIndex = 1;
@@ -122,7 +128,6 @@ class ChatService {
       await client.query('ROLLBACK');
       console.error("❌ Batch insert failed:", err.message);
 
-      // Kembalikan ke buffer untuk retry
       this.buffer = [...toInsert, ...this.buffer];
 
     } finally {
@@ -148,23 +153,21 @@ class ChatService {
     process.on('SIGINT', () => shutdown('SIGINT'));
   }
 
-  // Method untuk force flush (kalau butuh)
   async forceFlush() {
     await this.flush();
   }
 
-  // Get buffer status
   getStatus() {
     return {
       buffered: this.buffer.length,
       batchSize: this.BATCH_SIZE,
       flushInterval: this.FLUSH_INTERVAL,
-      isFlushig: this.isFlushig
+      isFlushig: this.isFlushig,
+      allowedChannels: this.ALLOWED_CHANNELS
     };
   }
 }
 
-// Singleton instance
 const chatService = new ChatService();
 
 module.exports = {
