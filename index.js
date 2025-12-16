@@ -801,15 +801,14 @@ app.post("/webhook/qontak", async (req, res) => {
   }, BUFFER_TIMEOUT);
 });
 
-
 async function send_all_chat_to_flowise(roomId) {
   try {
-    // 1. Ambil semua chat berdasarkan room_id
+    // 1. Ambil semua chat
     const result = await pool.query(
-      `SELECT room_id, sender_id, name, participant_type, channel_account, 
-              account_uniq_id, text 
-       FROM chat_history 
-       WHERE room_id = $1 
+      `SELECT room_id, sender_id, name, participant_type, channel_account,
+              account_uniq_id, text
+       FROM chat_history
+       WHERE room_id = $1
        ORDER BY created_at ASC`,
       [roomId]
     );
@@ -821,28 +820,47 @@ async function send_all_chat_to_flowise(roomId) {
 
     const chats = result.rows;
 
-    // 2. Tentukan data meta
+    // 2. Ambil meta customer & agent (lowercase SAFE)
+    const customer = chats.find(
+      c => c.participant_type.toLowerCase() === "customer"
+    );
 
-    const customer = chats.find(x => x.participant_type === "Customer");
-    const agent = chats.find(x => x.participant_type === "Agent");
+    const agent = chats.find(
+      c => c.participant_type.toLowerCase() === "agent"
+    );
 
     const customerName = customer?.name || "Customer";
-    const agentName = agent?.name || "Agent";
-    const channel = customer?.channel_account || "-";
     const phone = customer?.account_uniq_id || "-";
+    const channel = customer?.channel_account || "-";
+    const agentName = agent?.name || "Agent";
 
-    // 3. Gabungkan semua text chat
+    // 3. Gabungkan chat jadi satu teks (INTI PERUBAHAN)
     const allText = chats
-      .map(c => `${c.participant_type}: ${c.text}`)
+      .map(c => {
+        const type = c.participant_type.toLowerCase();
+
+        if (type === "customer") {
+          return `Customer: ${c.text}`;
+        }
+
+        if (type === "agent") {
+          return `Agent: ${c.text}`;
+        }
+
+        return null;
+      })
+      .filter(Boolean)
       .join("\n");
 
-    // 4. Bentuk prompt string akhir
+    // 4. Final prompt (rapi & jelas)
     const finalPrompt =
-      `Customer Name: ${customerName}. Customer Phone: ${phone}. Channel: ${channel}. Agent Name: ${agentName}.\n\n` +
-      `Chat History: ${allText}`;
+  `CustomerName:${customerName}|` +
+  `CustomerPhone:${phone}|` +
+  `Channel:${channel}|` +
+  `AgentName:${agentName}|` +
+  `ChatHistory:${allText}`
 
-
-    console.log("pesan dikirim ke flowise");
+    // console.log("📤 Pesan dikirim ke Flowise:\n", finalPrompt);
 
     // 5. Kirim ke Flowise
     const response = await fetch(
@@ -858,20 +876,18 @@ async function send_all_chat_to_flowise(roomId) {
         })
       }
     );
+
     const jsonOutput = await response.json();
-    // console.log("📥 Response dari Flowise:", jsonOutput);
-    //proses mengirim ke lark
+    console.log("📥 Response dari Flowise:", jsonOutput);
+
+    // 6. Kirim ke Lark & hapus chat
     try {
       await postToLark(jsonOutput);
-      if (roomId) {
-        await deleteChatHistory(roomId);
-
-      } else {
-        console.warn("⚠️ Tidak ada room_id, tidak bisa hapus chat history.");
-      }
+      await deleteChatHistory(roomId);
     } catch (error) {
-      console.error("Gagal kirim ke Lark:", error.message);
+      console.error("❌ Gagal kirim ke Lark:", error.message);
     }
+
     return jsonOutput;
 
   } catch (err) {
@@ -879,6 +895,7 @@ async function send_all_chat_to_flowise(roomId) {
     return null;
   }
 }
+
 
 
 const lark = require('@larksuiteoapi/node-sdk');
@@ -1141,21 +1158,31 @@ app.post("/save_iccid", async (req, res) => {
 
 
 ///GET CHAT HISTORY
-async function get_chat_history_latest() {
+async function get_chat_history_latest(limit = 30) {
   try {
     const query = `
-      SELECT *
+      SELECT
+        id,
+        room_id,
+        sender_id,
+        name,
+        participant_type,
+        channel_account,
+        text,
+        created_at
       FROM chat_history
       ORDER BY created_at DESC
-      LIMIT 30
+      LIMIT $1
     `;
-    const { rows } = await pool.query(query);
+
+    const { rows } = await pool.query(query, [limit]);
     return rows;
   } catch (err) {
     console.error("get_chat_history_latest error:", err.message);
     return [];
   }
 }
+
 //untuk melihat chat history
 app.get("/chat/latest", async (req, res) => {
   try {
